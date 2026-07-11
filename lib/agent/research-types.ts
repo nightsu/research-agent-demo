@@ -35,7 +35,7 @@ export const sourceSchema = z.object({
 });
 
 export const sourceEvaluationSchema = z.object({
-  sourceId: z.string(),
+  sourceId: z.string().trim().min(1),
   decision: z.enum(["accepted", "rejected"]),
   relevance: z.number().min(0).max(5),
   authority: z.number().min(0).max(5),

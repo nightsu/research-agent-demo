@@ -20,6 +20,7 @@ export interface ResearchState {
 
 export type ResearchAction =
   | { type: "plan.completed"; payload: ResearchPlan }
+  // Search history is observable transport data; workflow state only retains sources.
   | { type: "search.started"; payload: { query: string } }
   | {
       type: "search.completed";
@@ -51,6 +52,42 @@ const nextPhaseByAction = {
   "research.cancelled": "cancelled",
   "research.failed": "failed",
 } as const;
+
+const legalActionsByPhase = {
+  planning: ["plan.completed"],
+  searching: ["search.started", "search.completed"],
+  evaluating: [
+    "sources.evaluated",
+    "gap.detected",
+    "synthesis.started",
+  ],
+  synthesizing: ["report.completed", "research.partial"],
+  completed: [],
+  partial: [],
+  cancelled: [],
+  failed: [],
+} as const satisfies Record<ResearchPhase, readonly ResearchAction["type"][]>;
+
+function isLegalTransition(
+  phase: ResearchPhase,
+  actionType: ResearchAction["type"],
+): boolean {
+  if (
+    actionType === "research.cancelled" ||
+    actionType === "research.failed"
+  ) {
+    return ![
+      "completed",
+      "partial",
+      "cancelled",
+      "failed",
+    ].includes(phase);
+  }
+
+  return (legalActionsByPhase[phase] as readonly ResearchAction["type"][]).includes(
+    actionType,
+  );
+}
 
 export function createResearchState(question: string): ResearchState {
   return {
@@ -110,6 +147,10 @@ export function reduceResearchState(
   state: ResearchState,
   action: ResearchAction,
 ): ResearchState {
+  if (!isLegalTransition(state.phase, action.type)) {
+    return state;
+  }
+
   const nextState: ResearchState = {
     ...state,
     phase: nextPhaseByAction[action.type],

@@ -11,6 +11,7 @@ import type {
   ResearchReport,
   Source,
 } from "./research-types";
+import { sourceEvaluationSchema } from "./research-types";
 
 const plan: ResearchPlan = {
   objective: "Compare the agent capabilities of Kimi and DeepSeek",
@@ -86,7 +87,10 @@ describe("research workflow state", () => {
   });
 
   it("deduplicates search sources by canonical URL", () => {
-    const initial = createResearchState("Compare Kimi and DeepSeek agents");
+    const initial = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "searching" as const,
+    };
     const afterFirstSearch = reduceResearchState(initial, {
       type: "search.completed",
       payload: {
@@ -94,8 +98,12 @@ describe("research workflow state", () => {
         sources: [source("source-1", "https://example.com/docs/")],
       },
     });
+    const afterGap = reduceResearchState(afterFirstSearch, {
+      type: "gap.detected",
+      payload: { gap: "Find another agent documentation source." },
+    });
 
-    const afterSecondSearch = reduceResearchState(afterFirstSearch, {
+    const afterSecondSearch = reduceResearchState(afterGap, {
       type: "search.completed",
       payload: {
         query: "agent docs",
@@ -106,11 +114,14 @@ describe("research workflow state", () => {
     expect(afterSecondSearch.sources).toEqual([
       source("source-1", "https://example.com/docs/"),
     ]);
-    expect(afterSecondSearch.stepCount).toBe(2);
+    expect(afterSecondSearch.stepCount).toBe(3);
   });
 
   it("replaces a previous source evaluation with the same sourceId", () => {
-    const initial = createResearchState("Compare Kimi and DeepSeek agents");
+    const initial = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+    };
     const firstEvaluation = {
       sourceId: "source-1",
       decision: "rejected" as const,
@@ -143,12 +154,61 @@ describe("research workflow state", () => {
     action,
     phase,
   }) => {
+    const requiredPhase =
+      action.type === "report.completed" || action.type === "research.partial"
+        ? "synthesizing"
+        : "planning";
     const next = reduceResearchState(
-      createResearchState("Compare Kimi and DeepSeek agents"),
+      {
+        ...createResearchState("Compare Kimi and DeepSeek agents"),
+        phase: requiredPhase,
+      },
       action,
     );
 
     expect(next.phase).toBe(phase);
     expect(next.stepCount).toBe(1);
+  });
+
+  it("rejects completing a report directly from planning", () => {
+    const initial = createResearchState("Compare Kimi and DeepSeek agents");
+
+    const next = reduceResearchState(initial, {
+      type: "report.completed",
+      payload: { report },
+    });
+
+    expect(next).toBe(initial);
+  });
+
+  it.each(["completed", "partial", "cancelled", "failed"] as const)(
+    "keeps the %s phase unchanged after a later action",
+    (phase) => {
+      const terminal = {
+        ...createResearchState("Compare Kimi and DeepSeek agents"),
+        phase,
+        stepCount: 4,
+      };
+
+      const next = reduceResearchState(terminal, {
+        type: "plan.completed",
+        payload: plan,
+      });
+
+      expect(next).toBe(terminal);
+    },
+  );
+
+  it("rejects a blank sourceId in a source evaluation", () => {
+    expect(() =>
+      sourceEvaluationSchema.parse({
+        sourceId: "   ",
+        decision: "accepted",
+        relevance: 5,
+        authority: 4,
+        freshness: 3,
+        reason: "Relevant source.",
+      }),
+    ).toThrow();
   });
 });
