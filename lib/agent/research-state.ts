@@ -57,6 +57,7 @@ const legalActionsByPhase = {
   planning: ["plan.completed"],
   searching: ["search.started", "search.completed"],
   evaluating: [
+    "search.started",
     "sources.evaluated",
     "gap.detected",
     "synthesis.started",

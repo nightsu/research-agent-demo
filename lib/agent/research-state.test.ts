@@ -117,6 +117,46 @@ describe("research workflow state", () => {
     expect(afterSecondSearch.stepCount).toBe(3);
   });
 
+  it("runs the next planned search after evaluating the prior query", () => {
+    const planned = reduceResearchState(
+      createResearchState("Compare Kimi and DeepSeek agents"),
+      { type: "plan.completed", payload: plan },
+    );
+    const firstSearchStarted = reduceResearchState(planned, {
+      type: "search.started",
+      payload: { query: "Kimi agent documentation" },
+    });
+    const firstSearchCompleted = reduceResearchState(firstSearchStarted, {
+      type: "search.completed",
+      payload: {
+        query: "Kimi agent documentation",
+        sources: [source("source-1", "https://example.com/kimi")],
+      },
+    });
+    const evaluated = reduceResearchState(firstSearchCompleted, {
+      type: "sources.evaluated",
+      payload: { evaluations: [] },
+    });
+
+    const secondSearchStarted = reduceResearchState(evaluated, {
+      type: "search.started",
+      payload: { query: "DeepSeek agent documentation" },
+    });
+    const secondSearchCompleted = reduceResearchState(secondSearchStarted, {
+      type: "search.completed",
+      payload: {
+        query: "DeepSeek agent documentation",
+        sources: [source("source-2", "https://example.com/deepseek")],
+      },
+    });
+
+    expect(secondSearchStarted.phase).toBe("searching");
+    expect(secondSearchStarted.stepCount).toBe(5);
+    expect(secondSearchCompleted.phase).toBe("evaluating");
+    expect(secondSearchCompleted.stepCount).toBe(6);
+    expect(secondSearchCompleted.sources).toHaveLength(2);
+  });
+
   it("replaces a previous source evaluation with the same sourceId", () => {
     const initial = {
       ...createResearchState("Compare Kimi and DeepSeek agents"),
@@ -196,6 +236,28 @@ describe("research workflow state", () => {
       });
 
       expect(next).toBe(terminal);
+    },
+  );
+
+  it.each(["planning", "searching", "evaluating", "synthesizing"] as const)(
+    "accepts cancellation and failure from the %s phase",
+    (phase) => {
+      const state = {
+        ...createResearchState("Compare Kimi and DeepSeek agents"),
+        phase,
+      };
+
+      const cancelled = reduceResearchState(state, {
+        type: "research.cancelled",
+        payload: { reason: "Cancelled by the user." },
+      });
+      const failed = reduceResearchState(state, {
+        type: "research.failed",
+        payload: { error: "Provider unavailable." },
+      });
+
+      expect(cancelled).toMatchObject({ phase: "cancelled", stepCount: 1 });
+      expect(failed).toMatchObject({ phase: "failed", stepCount: 1 });
     },
   );
 
