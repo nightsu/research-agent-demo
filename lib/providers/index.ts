@@ -2,6 +2,18 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
 export type ProviderName = "kimi" | "deepseek";
 
+function requireApiKey(providerName: ProviderName, variableName: string): string {
+  const apiKey = process.env[variableName];
+
+  if (!apiKey) {
+    throw new Error(
+      `${variableName} is required for the ${providerName} research provider.`,
+    );
+  }
+
+  return apiKey;
+}
+
 export function getProviderName(): ProviderName {
   const configured = process.env.AI_PROVIDER ?? "kimi";
 
@@ -20,7 +32,7 @@ export function getResearchModel() {
   if (providerName === "kimi") {
     const provider = createOpenAICompatible({
       name: "kimi",
-      apiKey: process.env.KIMI_API_KEY,
+      apiKey: requireApiKey("kimi", "MOONSHOT_API_KEY"),
       baseURL: process.env.KIMI_BASE_URL ?? "https://api.moonshot.cn/v1",
     });
 
@@ -32,7 +44,7 @@ export function getResearchModel() {
   // preserve that provider field between assistant tool calls.
   const provider = createOpenAICompatible({
     name: "deepseek",
-    apiKey: process.env.DEEPSEEK_API_KEY,
+    apiKey: requireApiKey("deepseek", "DEEPSEEK_API_KEY"),
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   });
 

@@ -14,8 +14,10 @@ describe("research provider selection", () => {
     createOpenAICompatible.mockReset();
     process.env = { ...originalEnv };
     delete process.env.AI_PROVIDER;
+    delete process.env.MOONSHOT_API_KEY;
     delete process.env.KIMI_MODEL;
     delete process.env.KIMI_BASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
     delete process.env.DEEPSEEK_MODEL;
     delete process.env.DEEPSEEK_BASE_URL;
   });
@@ -26,7 +28,7 @@ describe("research provider selection", () => {
   });
 
   it("uses Kimi and its defaults when no provider is configured", async () => {
-    process.env.KIMI_API_KEY = "kimi-key";
+    process.env.MOONSHOT_API_KEY = "kimi-key";
     const model = { provider: "kimi-model" };
     const provider = vi.fn(() => model);
     createOpenAICompatible.mockReturnValue(provider);
@@ -65,7 +67,7 @@ describe("research provider selection", () => {
   it.each([
     {
       providerName: "kimi",
-      apiKeyName: "KIMI_API_KEY",
+      apiKeyName: "MOONSHOT_API_KEY",
       baseUrlName: "KIMI_BASE_URL",
       modelName: "KIMI_MODEL",
     },
@@ -109,6 +111,22 @@ describe("research provider selection", () => {
     );
     expect(() => getResearchModel()).toThrow(
       'Unsupported AI provider "unknown". Expected "kimi" or "deepseek".',
+    );
+    expect(createOpenAICompatible).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["kimi", "MOONSHOT_API_KEY"],
+    ["deepseek", "DEEPSEEK_API_KEY"],
+  ])("rejects %s before provider creation when %s is missing", async (
+    providerName,
+    apiKeyName,
+  ) => {
+    process.env.AI_PROVIDER = providerName;
+    const { getResearchModel } = await import("./index");
+
+    expect(() => getResearchModel()).toThrow(
+      `${apiKeyName} is required for the ${providerName} research provider.`,
     );
     expect(createOpenAICompatible).not.toHaveBeenCalled();
   });

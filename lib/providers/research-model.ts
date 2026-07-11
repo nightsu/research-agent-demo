@@ -1,5 +1,5 @@
-import { generateText, Output } from "ai";
-import type { ZodType } from "zod";
+import { generateText, NoObjectGeneratedError, Output } from "ai";
+import { ZodError, type ZodType } from "zod";
 
 import {
   evidenceAssessmentSchema,
@@ -13,6 +13,7 @@ import {
   type SourceEvaluation,
 } from "../agent/research-types";
 import {
+  RESEARCH_SYSTEM_PROMPT,
   evidencePrompt,
   planPrompt,
   reportPrompt,
@@ -21,65 +22,165 @@ import {
 import { getResearchModel } from "./index";
 
 export interface ResearchModel {
-  generatePlan(question: string): Promise<ResearchPlan>;
+  generatePlan(
+    question: string,
+    options?: ResearchModelOptions,
+  ): Promise<ResearchPlan>;
   evaluateSources(
     question: string,
     sources: Source[],
+    options?: ResearchModelOptions,
   ): Promise<SourceEvaluation[]>;
   assessEvidence(
     question: string,
     sources: Source[],
     evaluations: SourceEvaluation[],
+    options?: ResearchModelOptions,
   ): Promise<EvidenceAssessment>;
   generateReport(
     question: string,
     sources: Source[],
     evaluations: SourceEvaluation[],
     partial: boolean,
+    options?: ResearchModelOptions,
   ): Promise<ResearchReport>;
 }
 
-function failureMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+export interface ResearchModelOptions {
+  abortSignal?: AbortSignal;
+}
+
+export class MissingStructuredOutputError extends Error {
+  constructor() {
+    super("The model returned no structured output");
+    this.name = "MissingStructuredOutputError";
+  }
+}
+
+function isRepairableStructuredOutputError(error: unknown): boolean {
+  return (
+    error instanceof MissingStructuredOutputError ||
+    NoObjectGeneratedError.isInstance(error) ||
+    error instanceof ZodError
+  );
+}
+
+export function validateSourceEvaluations(
+  sources: Source[],
+  evaluations: SourceEvaluation[],
+): SourceEvaluation[] {
+  const expectedSourceIds = new Set(sources.map((source) => source.id));
+  const integritySchema = sourceEvaluationSchema.array().superRefine(
+    (items, context) => {
+      const counts = new Map<string, number>();
+
+      items.forEach((evaluation, index) => {
+        counts.set(
+          evaluation.sourceId,
+          (counts.get(evaluation.sourceId) ?? 0) + 1,
+        );
+
+        if (!expectedSourceIds.has(evaluation.sourceId)) {
+          context.addIssue({
+            code: "custom",
+            message: `Unknown source ID: ${evaluation.sourceId}`,
+            path: [index, "sourceId"],
+          });
+        }
+      });
+
+      for (const sourceId of expectedSourceIds) {
+        const count = counts.get(sourceId) ?? 0;
+        if (count !== 1) {
+          context.addIssue({
+            code: "custom",
+            message: `Expected exactly one evaluation for source ID: ${sourceId}`,
+          });
+        }
+      }
+    },
+  );
+
+  return integritySchema.parse(evaluations);
+}
+
+export function validateReportCitations(
+  sources: Source[],
+  evaluations: SourceEvaluation[],
+  report: ResearchReport,
+): ResearchReport {
+  const sourceIds = new Set(sources.map((source) => source.id));
+  const acceptedSourceIds = new Set(
+    evaluations
+      .filter(
+        (evaluation) =>
+          evaluation.decision === "accepted" &&
+          sourceIds.has(evaluation.sourceId),
+      )
+      .map((evaluation) => evaluation.sourceId),
+  );
+  const citationSchema = reportSchema.superRefine((value, context) => {
+    value.findings.forEach((finding, findingIndex) => {
+      finding.sourceIds.forEach((sourceId, sourceIndex) => {
+        if (!acceptedSourceIds.has(sourceId)) {
+          context.addIssue({
+            code: "custom",
+            message: `Citation must reference an accepted source ID: ${sourceId}`,
+            path: ["findings", findingIndex, "sourceIds", sourceIndex],
+          });
+        }
+      });
+    });
+  });
+
+  return citationSchema.parse(report);
 }
 
 async function generateValidated<T>(
   schema: ZodType<T>,
   prompt: string,
+  options: ResearchModelOptions = {},
+  validate: (output: T) => T = (output) => output,
 ): Promise<T> {
   const model = getResearchModel();
 
   const attempt = async (attemptPrompt: string): Promise<T> => {
     const result = await generateText({
       model,
+      system: RESEARCH_SYSTEM_PROMPT,
       prompt: attemptPrompt,
       output: Output.object({ schema }),
+      abortSignal: options.abortSignal,
     });
 
     if (result.output == null) {
-      throw new Error("The model returned no structured output");
+      throw new MissingStructuredOutputError();
     }
 
     // Output.object validates the provider response, and this parse keeps the
     // application schema as the final boundary even for mocked or future SDK results.
-    return schema.parse(result.output);
+    return validate(schema.parse(result.output));
   };
 
   try {
     return await attempt(prompt);
   } catch (initialError) {
-    // One repair generation handles transient malformed output without allowing
-    // an unbounded model retry loop or silently relaxing the schema.
+    if (!isRepairableStructuredOutputError(initialError)) {
+      throw initialError;
+    }
+
+    // Only malformed structured output gets one repair generation. Transport,
+    // authentication, rate-limit, and cancellation failures remain single-call.
     const repairPrompt = `${prompt}
 
-Repair instruction: the previous generation failed validation (${failureMessage(initialError)}). Generate the full response again and satisfy the exact structured output constraints. Do not discuss the failure.`;
+Repair instruction: the previous generation failed validation. Generate the full response again and satisfy the exact structured output constraints. Do not discuss the failure.`;
 
     try {
       return await attempt(repairPrompt);
     } catch (repairError) {
-      throw new Error(
+      throw new AggregateError(
+        [initialError, repairError],
         "Structured generation failed after one repair attempt",
-        { cause: repairError },
       );
     }
   }
@@ -87,25 +188,52 @@ Repair instruction: the previous generation failed validation (${failureMessage(
 
 export function createResearchModel(): ResearchModel {
   return {
-    generatePlan(question) {
-      return generateValidated(researchPlanSchema, planPrompt(question));
+    generatePlan(question, options) {
+      return generateValidated(
+        researchPlanSchema,
+        planPrompt(question),
+        options,
+      );
     },
-    evaluateSources(question, sources) {
+    evaluateSources(question, sources, options) {
       return generateValidated(
         sourceEvaluationSchema.array(),
         sourceEvaluationPrompt(question, sources),
+        options,
+        (output) => validateSourceEvaluations(sources, output),
       );
     },
-    assessEvidence(question, sources, evaluations) {
+    assessEvidence(question, sources, evaluations, options) {
       return generateValidated(
         evidenceAssessmentSchema,
         evidencePrompt(question, sources, evaluations),
+        options,
       );
     },
-    generateReport(question, sources, evaluations, partial) {
+    generateReport(question, sources, evaluations, partial, options) {
+      const knownSourceIds = new Set(sources.map((source) => source.id));
+      const acceptedEvaluations = evaluations.filter(
+        (evaluation) =>
+          evaluation.decision === "accepted" &&
+          knownSourceIds.has(evaluation.sourceId),
+      );
+      const acceptedSourceIds = new Set(
+        acceptedEvaluations.map((evaluation) => evaluation.sourceId),
+      );
+      const acceptedSources = sources.filter((source) =>
+        acceptedSourceIds.has(source.id),
+      );
+
       return generateValidated(
         reportSchema,
-        reportPrompt(question, sources, evaluations, partial),
+        reportPrompt(
+          question,
+          acceptedSources,
+          acceptedEvaluations,
+          partial,
+        ),
+        options,
+        (output) => validateReportCitations(sources, evaluations, output),
       );
     },
   };
