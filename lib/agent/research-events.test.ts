@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeEventLine, encodeEvent, researchEventSchema } from "./research-events";
+import {
+  decodeEventLine,
+  encodeEvent,
+  researchEventSchema,
+  type ResearchEvent,
+} from "./research-events";
+import { httpUrlSchema, sourceSchema } from "./research-types";
 
 const source = {
   id: "source-1",
@@ -25,6 +31,38 @@ const report = {
   limitations: [],
 };
 
+const evaluation = {
+  sourceId: source.id,
+  decision: "accepted" as const,
+  relevance: 5,
+  authority: 4,
+  freshness: 3,
+  reason: "Relevant official documentation",
+};
+
+const validEvents: ResearchEvent[] = [
+  { type: "plan.started", question: "How do Kimi agents work?" },
+  {
+    type: "plan.completed",
+    plan: {
+      objective: "Understand Kimi agents",
+      subquestions: ["Which tools are available?"],
+      searchQueries: ["Kimi agent tools"],
+    },
+  },
+  { type: "search.started", query: "Kimi agents", reason: "Find official documentation" },
+  { type: "search.completed", query: "Kimi agents", sources: [source], resultCount: 3 },
+  { type: "source.read", sourceId: source.id, url: source.url },
+  { type: "source.evaluated", evaluation },
+  { type: "gap.detected", description: "Pricing is unclear", followUpQueries: ["Kimi agent pricing"] },
+  { type: "conclusion.updated", summary: "Kimi provides agent tools." },
+  { type: "report.started", partial: false },
+  { type: "report.completed", report },
+  { type: "research.partial", report, reason: "One source was unavailable" },
+  { type: "research.cancelled" },
+  { type: "research.failed", message: "Search provider unavailable", recoverable: true },
+];
+
 describe("research event protocol", () => {
   it("round-trips one search.started event with exactly one trailing newline", () => {
     const event = {
@@ -43,6 +81,19 @@ describe("research event protocol", () => {
 
   it("rejects private reasoning events", () => {
     expect(() => researchEventSchema.parse({ type: "private.reasoning" })).toThrow();
+  });
+
+  it.each([
+    ["reasoning", { type: "research.cancelled", reasoning: "hidden" }],
+    ["privateReasoning", { type: "research.cancelled", privateReasoning: "hidden" }],
+    ["misspelled payload", { type: "search.started", query: "Kimi", reson: "docs", reason: "docs" }],
+  ])("rejects otherwise-valid events with an extra %s field", (_label, event) => {
+    expect(() => researchEventSchema.parse(event)).toThrow();
+    expect(() => encodeEvent(event as ResearchEvent)).toThrow();
+  });
+
+  it("rejects a blank plan question", () => {
+    expect(() => researchEventSchema.parse({ type: "plan.started", question: "   " })).toThrow();
   });
 
   it.each([
@@ -75,6 +126,32 @@ describe("research event protocol", () => {
     "rejects blank or multiple records: %j",
     (line) => {
       expect(() => decodeEventLine(line)).toThrow();
+    },
+  );
+
+  it.each(validEvents)("round-trips a valid $type event", (event) => {
+    expect(decodeEventLine(encodeEvent(event))).toEqual(event);
+  });
+
+  it.each(["http://example.com/source", "https://example.com/source"])(
+    "accepts an HTTP(S) source URL: %s",
+    (url) => {
+      expect(httpUrlSchema.parse(url)).toBe(url);
+      expect(sourceSchema.parse({ ...source, url }).url).toBe(url);
+      expect(researchEventSchema.parse({ type: "source.read", sourceId: source.id, url })).toEqual({
+        type: "source.read",
+        sourceId: source.id,
+        url,
+      });
+    },
+  );
+
+  it.each(["javascript:alert(1)", "data:text/plain,secret", "file:///tmp/secret"])(
+    "rejects a non-HTTP source URL: %s",
+    (url) => {
+      expect(() => httpUrlSchema.parse(url)).toThrow();
+      expect(() => sourceSchema.parse({ ...source, url })).toThrow();
+      expect(() => researchEventSchema.parse({ type: "source.read", sourceId: source.id, url })).toThrow();
     },
   );
 });

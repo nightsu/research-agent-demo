@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  httpUrlSchema,
   reportSchema,
   researchPlanSchema,
   sourceEvaluationSchema,
@@ -12,60 +13,61 @@ const nonemptyStringSchema = z.string().trim().min(1);
 // Observable events expose decisions and tool evidence for the learning UI.
 // They intentionally never transport provider-private chain-of-thought fields.
 export const researchEventSchema = z.discriminatedUnion("type", [
-  z.object({
+  z.strictObject({
     type: z.literal("plan.started"),
-    question: z.string(),
+    question: nonemptyStringSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("plan.completed"),
     plan: researchPlanSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("search.started"),
     query: nonemptyStringSchema,
     reason: nonemptyStringSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("search.completed"),
     query: nonemptyStringSchema,
     sources: sourceSchema.array(),
+    // Provider-returned count before any downstream source filtering.
     resultCount: z.number().int().nonnegative(),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("source.read"),
     sourceId: nonemptyStringSchema,
-    url: z.string().url(),
+    url: httpUrlSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("source.evaluated"),
     evaluation: sourceEvaluationSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("gap.detected"),
     description: nonemptyStringSchema,
     followUpQueries: nonemptyStringSchema.array().max(3),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("conclusion.updated"),
     summary: nonemptyStringSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("report.started"),
     partial: z.boolean(),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("report.completed"),
     report: reportSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("research.partial"),
     report: reportSchema,
     reason: nonemptyStringSchema,
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("research.cancelled"),
   }),
-  z.object({
+  z.strictObject({
     type: z.literal("research.failed"),
     message: nonemptyStringSchema,
     recoverable: z.boolean(),

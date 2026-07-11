@@ -23,10 +23,22 @@ export const researchPlanSchema = z.object({
   searchQueries: z.array(z.string().min(1)).min(1).max(6),
 });
 
+export const httpUrlSchema = z.string().refine(
+  (value) => {
+    try {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "URL must be valid and use the http: or https: protocol" },
+);
+
 export const sourceSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
-  url: z.string().url(),
+  url: httpUrlSchema,
   domain: z.string().min(1),
   snippet: z.string(),
   rawContent: z.string().optional(),
