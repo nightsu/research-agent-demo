@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TavilyError, extractSources, searchWeb } from "./tavily";
 
 const API_KEY = "test-tavily-secret";
+const SENTINEL = "do-not-retain-this-value";
 const DEFAULT_BASE_URL = "https://api.tavily.com";
 const articleUrl = "https://example.com/article";
 
@@ -84,6 +85,33 @@ describe("Tavily tools", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://tavily.internal/v1/search");
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("time_range");
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["empty", {}],
+    ["unknown time range", { timeRange: SENTINEL }],
+  ])("rejects %s search options with a controlled error before fetching", async (
+    _label,
+    options,
+  ) => {
+    const error = await searchWeb("agent tools", options as never).catch(
+      (cause: unknown) => cause,
+    );
+
+    expectTavilyError(error);
+    expect(error).not.toBeInstanceOf(TypeError);
+    expect(error).toMatchObject({ recoverable: false });
+    expect(error.message).toContain("options");
+    expect(error.cause).toMatchObject({
+      name: "Error",
+      message: "Tavily search options validation failed",
+    });
+    expect(`${String(error.cause)} ${JSON.stringify(error.cause)}`).not.toContain(
+      SENTINEL,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("normalizes validated search results into stable sources", async () => {
@@ -172,27 +200,44 @@ describe("Tavily tools", () => {
   });
 
   it.each([
-    ["invalid JSON", new Response("not-json")],
+    [
+      "invalid JSON",
+      () => new Response(`${SENTINEL}:${API_KEY}`),
+      "Tavily /search invalid JSON",
+    ],
     [
       "invalid response shape",
-      jsonResponse({ results: [{ title: "Missing URL" }] }),
+      () =>
+        jsonResponse({
+          results: [
+            {
+              title: SENTINEL,
+              url: articleUrl,
+              content: API_KEY,
+              score: SENTINEL,
+            },
+          ],
+        }),
+      "Tavily /search invalid response shape",
     ],
     [
       "unsafe source URL",
-      jsonResponse({
-        results: [
-          {
-            title: "Unsafe",
-            url: "file:///etc/passwd",
-            content: "Unsafe result",
-          },
-        ],
-      }),
+      () =>
+        jsonResponse({
+          results: [
+            {
+              title: "Unsafe",
+              url: `file:///${SENTINEL}`,
+              content: API_KEY,
+            },
+          ],
+        }),
+      "Tavily /search invalid response shape",
     ],
   ])(
     "reports a useful non-recoverable validation error for %s",
-    async (_label, response) => {
-      fetchMock.mockResolvedValueOnce(response);
+    async (_label, createResponse, expectedCauseMessage) => {
+      fetchMock.mockResolvedValueOnce(createResponse());
 
       const error = await searchWeb("agent tools", { timeRange: "year" }).catch(
         (cause: unknown) => cause,
@@ -202,7 +247,18 @@ describe("Tavily tools", () => {
       expect(error.recoverable).toBe(false);
       expect(error.message).toContain("/search");
       expect(error.message.toLowerCase()).toMatch(/response|valid|json/);
-      expect(error.cause).toBeDefined();
+      expect(error.cause).toMatchObject({
+        name: "Error",
+        message: expectedCauseMessage,
+      });
+      const errorSurface = [
+        error.message,
+        String(error.cause),
+        JSON.stringify(error),
+        JSON.stringify(error.cause),
+      ].join(" ");
+      expect(errorSurface).not.toContain(SENTINEL);
+      expect(errorSurface).not.toContain(API_KEY);
     },
   );
 

@@ -11,6 +11,11 @@ import {
 const DEFAULT_BASE_URL = "https://api.tavily.com";
 
 const querySchema = z.string().trim().min(1).max(500);
+const searchOptionsSchema = z
+  .object({
+    timeRange: z.enum(["all", "year", "month", "week"]),
+  })
+  .strict();
 const questionSchema = z.string().trim().min(1).max(2_000);
 const inputUrlSchema = z.string().max(2_048).pipe(httpUrlSchema);
 const inputUrlsSchema = z.array(inputUrlSchema).min(1).max(20);
@@ -70,7 +75,7 @@ function parseInput<T>(schema: z.ZodType<T>, input: unknown, label: string): T {
   if (!result.success) {
     throw new TavilyError(`Invalid Tavily ${label}`, {
       recoverable: false,
-      cause: result.error,
+      cause: new Error(`Tavily ${label} validation failed`),
     });
   }
   return result.data;
@@ -134,10 +139,10 @@ async function request(path: string, body: unknown, signal?: AbortSignal) {
 
   try {
     return (await response.json()) as unknown;
-  } catch (cause) {
+  } catch {
     throw new TavilyError(`Tavily ${path} returned invalid JSON`, {
       recoverable: false,
-      cause,
+      cause: new Error(`Tavily ${path} invalid JSON`),
     });
   }
 }
@@ -151,7 +156,7 @@ function parseResponse<T>(
   if (!result.success) {
     throw new TavilyError(`Tavily ${path} returned an invalid response`, {
       recoverable: false,
-      cause: result.error,
+      cause: new Error(`Tavily ${path} invalid response shape`),
     });
   }
   return result.data;
@@ -163,10 +168,17 @@ export async function searchWeb(
   signal?: AbortSignal,
 ): Promise<Source[]> {
   const validQuery = parseInput(querySchema, query, "search query");
+  const validOptions = parseInput(
+    searchOptionsSchema,
+    options,
+    "search options",
+  );
   const body = {
     query: validQuery,
     search_depth: "basic",
-    ...(options.timeRange === "all" ? {} : { time_range: options.timeRange }),
+    ...(validOptions.timeRange === "all"
+      ? {}
+      : { time_range: validOptions.timeRange }),
     max_results: 6,
     include_answer: false,
     include_raw_content: false,
