@@ -7,6 +7,7 @@ import {
   sourceSchema,
   type Source,
 } from "../agent/research-types";
+import { canonicalizeUrl } from "../agent/research-state";
 
 const DEFAULT_BASE_URL = "https://api.tavily.com";
 
@@ -19,26 +20,62 @@ const searchOptionsSchema = z
 const questionSchema = z.string().trim().min(1).max(2_000);
 const inputUrlSchema = z.string().max(2_048).pipe(httpUrlSchema);
 const inputUrlsSchema = z.array(inputUrlSchema).min(1).max(20);
+const tavilyBaseUrlSchema = z
+  .string()
+  .max(2_048)
+  .pipe(httpUrlSchema)
+  .superRefine((value, context) => {
+    const url = new URL(value);
+    const isLoopback = ["localhost", "127.0.0.1", "[::1]"].includes(
+      url.hostname,
+    );
+
+    if (url.username || url.password) {
+      context.addIssue({
+        code: "custom",
+        message: "Tavily base URL must not contain credentials",
+      });
+    }
+    if (url.protocol !== "https:" && !isLoopback) {
+      context.addIssue({
+        code: "custom",
+        message: "Tavily base URL must use HTTPS outside loopback hosts",
+      });
+    }
+  });
 
 const tavilySearchResponseSchema = z.object({
-  results: z.array(
-    z.object({
-      title: z.string().min(1),
-      url: httpUrlSchema,
-      content: z.string(),
-      score: z.number().min(0).max(1).optional(),
-      published_date: z.string().nullable().optional(),
-    }),
-  ),
+  results: z
+    .array(
+      z.object({
+        title: z.string().min(1).max(500),
+        url: inputUrlSchema,
+        content: z.string().max(50_000),
+        score: z.number().min(0).max(1).optional(),
+        published_date: z.string().max(100).nullable().optional(),
+      }),
+    )
+    .max(100),
 });
 
 const tavilyExtractResponseSchema = z.object({
-  results: z.array(
-    z.object({
-      url: httpUrlSchema,
-      raw_content: z.string(),
-    }),
-  ),
+  results: z
+    .array(
+      z.object({
+        url: inputUrlSchema,
+        raw_content: z.string().max(200_000),
+      }),
+    )
+    .max(100),
+  failed_results: z
+    .array(
+      z.object({
+        url: inputUrlSchema,
+        error: z.string().max(10_000),
+      }),
+    )
+    .max(100)
+    .optional(),
 });
 
 type TavilyErrorOptions = {
@@ -90,7 +127,7 @@ function getConfiguration() {
   }
 
   const baseUrl = parseInput(
-    httpUrlSchema,
+    tavilyBaseUrlSchema,
     process.env.TAVILY_BASE_URL?.trim() || DEFAULT_BASE_URL,
     "base URL",
   );
@@ -118,6 +155,9 @@ async function request(path: string, body: unknown, signal?: AbortSignal) {
       },
     );
   } catch (cause) {
+    if (signal?.aborted) {
+      throw signal.reason ?? cause;
+    }
     if (isAbortError(cause)) {
       throw cause;
     }
@@ -131,7 +171,8 @@ async function request(path: string, body: unknown, signal?: AbortSignal) {
     throw new TavilyError(
       `Tavily request to ${path} failed with status ${response.status}`,
       {
-        recoverable: response.status === 429 || response.status >= 500,
+        recoverable:
+          [408, 425, 429].includes(response.status) || response.status >= 500,
         status: response.status,
       },
     );
@@ -189,17 +230,19 @@ export async function searchWeb(
     "/search",
   );
 
-  return external.results.map((result) =>
-    sourceSchema.parse({
-      id: `source-${createHash("sha1").update(result.url).digest("hex").slice(0, 10)}`,
+  return external.results.map((result) => {
+    const canonicalUrl = canonicalizeUrl(result.url);
+
+    return sourceSchema.parse({
+      id: `source-${createHash("sha1").update(canonicalUrl).digest("hex").slice(0, 10)}`,
       title: result.title,
-      url: result.url,
-      domain: new URL(result.url).hostname,
+      url: canonicalUrl,
+      domain: new URL(canonicalUrl).hostname,
       snippet: result.content,
       publishedAt: result.published_date ?? undefined,
       score: result.score,
-    }),
-  );
+    });
+  });
 }
 
 export async function extractSources(

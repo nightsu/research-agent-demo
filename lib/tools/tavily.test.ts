@@ -88,6 +88,44 @@ describe("Tavily tools", () => {
   });
 
   it.each([
+    "http://localhost:8787",
+    "http://127.0.0.1:8787",
+    "http://[::1]:8787",
+  ])("allows the loopback HTTP base URL %s", async (baseUrl) => {
+    process.env.TAVILY_BASE_URL = baseUrl;
+    fetchMock.mockResolvedValueOnce(jsonResponse(searchResponse));
+
+    await searchWeb("agent tools", { timeRange: "all" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${baseUrl}/search`);
+  });
+
+  it.each([
+    ["remote HTTP", "http://example.com"],
+    ["credentials", `https://${SENTINEL}:password@example.com`],
+    ["unsupported protocol", "ftp://example.com"],
+  ])("rejects a base URL with %s before fetching", async (_label, baseUrl) => {
+    process.env.TAVILY_BASE_URL = baseUrl;
+
+    const error = await searchWeb("agent tools", { timeRange: "all" }).catch(
+      (cause: unknown) => cause,
+    );
+
+    expectTavilyError(error);
+    expect(error).toMatchObject({ recoverable: false });
+    expect(error.message).toContain("base URL");
+    const errorSurface = [
+      error.message,
+      String(error.cause),
+      JSON.stringify(error),
+      JSON.stringify(error.cause),
+    ].join(" ");
+    expect(errorSurface).not.toContain(API_KEY);
+    expect(errorSurface).not.toContain(SENTINEL);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ["missing", undefined],
     ["null", null],
     ["empty", {}],
@@ -132,6 +170,34 @@ describe("Tavily tools", () => {
     ]);
   });
 
+  it("canonicalizes equivalent provider URLs before storing and hashing them", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [
+          {
+            title: "First form",
+            url: " HTTPS://EXAMPLE.com:443/docs/#first ",
+            content: "First result",
+          },
+          {
+            title: "Second form",
+            url: "https://example.com/docs#second",
+            content: "Second result",
+          },
+        ],
+      }),
+    );
+
+    const result = await searchWeb("agent tools", { timeRange: "all" });
+
+    expect(result).toHaveLength(2);
+    expect(result.map((source) => source.url)).toEqual([
+      "https://example.com/docs",
+      "https://example.com/docs",
+    ]);
+    expect(result[0].id).toBe(result[1].id);
+  });
+
   it("extracts markdown content into a URL-keyed map", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -160,6 +226,104 @@ describe("Tavily tools", () => {
     });
   });
 
+  it("rejects malformed failed extraction results without retaining provider content", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        results: [{ url: articleUrl, raw_content: "# Extracted article" }],
+        failed_results: [
+          { url: `javascript:${SENTINEL}`, error: API_KEY },
+        ],
+      }),
+    );
+
+    const error = await extractSources(
+      [articleUrl],
+      "What does this source say?",
+    ).catch((cause: unknown) => cause);
+
+    expectTavilyError(error);
+    expect(error).toMatchObject({ recoverable: false });
+    expect(error.message).toContain("/extract");
+    const errorSurface = `${error.message} ${String(error.cause)} ${JSON.stringify(error)}`;
+    expect(errorSurface).not.toContain(SENTINEL);
+    expect(errorSurface).not.toContain(API_KEY);
+  });
+
+  it.each([
+    {
+      label: "search result count",
+      path: "/search",
+      response: () =>
+        jsonResponse({
+          results: Array.from({ length: 101 }, (_, index) => ({
+            title: `Result ${index}`,
+            url: `https://example.com/${index}`,
+            content: "Result content",
+          })),
+        }),
+      operation: () => searchWeb("agent tools", { timeRange: "all" }),
+    },
+    {
+      label: "search title length",
+      path: "/search",
+      response: () =>
+        jsonResponse({
+          results: [
+            {
+              title: `${"x".repeat(501)}${SENTINEL}`,
+              url: articleUrl,
+              content: API_KEY,
+            },
+          ],
+        }),
+      operation: () => searchWeb("agent tools", { timeRange: "all" }),
+    },
+    {
+      label: "extracted content length",
+      path: "/extract",
+      response: () =>
+        jsonResponse({
+          results: [
+            {
+              url: articleUrl,
+              raw_content: `${"x".repeat(200_001)}${SENTINEL}${API_KEY}`,
+            },
+          ],
+        }),
+      operation: () =>
+        extractSources([articleUrl], "What does this source say?"),
+    },
+    {
+      label: "failed extraction count",
+      path: "/extract",
+      response: () =>
+        jsonResponse({
+          results: [],
+          failed_results: Array.from({ length: 101 }, (_, index) => ({
+            url: `https://example.com/${index}`,
+            error: "Extraction failed",
+          })),
+        }),
+      operation: () =>
+        extractSources([articleUrl], "What does this source say?"),
+    },
+  ])("rejects an oversized $label response without leaking it", async ({
+    path,
+    response,
+    operation,
+  }) => {
+    fetchMock.mockResolvedValueOnce(response());
+
+    const error = await operation().catch((cause: unknown) => cause);
+
+    expectTavilyError(error);
+    expect(error).toMatchObject({ recoverable: false });
+    expect(error.message).toContain(path);
+    const errorSurface = `${error.message} ${String(error.cause)} ${JSON.stringify(error)}`;
+    expect(errorSurface).not.toContain(SENTINEL);
+    expect(errorSurface).not.toContain(API_KEY);
+  });
+
   it("fails before fetching when the API key is missing", async () => {
     delete process.env.TAVILY_API_KEY;
 
@@ -174,6 +338,8 @@ describe("Tavily tools", () => {
   });
 
   it.each([
+    [408, true],
+    [425, true],
     [429, true],
     [500, true],
     [503, true],
@@ -287,5 +453,38 @@ describe("Tavily tools", () => {
 
     await expect(operation).rejects.toBe(abortError);
     expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
+  it.each([
+    ["custom error", new Error("cancelled by caller")],
+    ["timeout", new DOMException("deadline exceeded", "TimeoutError")],
+  ])("rethrows the exact %s abort reason after a request has started", async (
+    _label,
+    reason,
+  ) => {
+    const controller = new AbortController();
+    fetchMock.mockImplementationOnce((_input, init) => {
+      const requestSignal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        requestSignal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("fetch aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+
+    const operation = searchWeb(
+      "agent tools",
+      { timeRange: "year" },
+      controller.signal,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+
+    controller.abort(reason);
+
+    await expect(operation).rejects.toBe(reason);
+    await expect(operation).rejects.not.toBeInstanceOf(TavilyError);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
