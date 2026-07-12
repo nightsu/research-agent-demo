@@ -1,0 +1,209 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  createResearchFlowFixture,
+  researchFlowAcceptedSourceIds,
+  researchFlowFollowUpQuery,
+  researchFlowInitialQuery,
+  researchFlowInput,
+  researchFlowRejectedSourceId,
+} from "../../../lib/agent/research-fixtures";
+import { runResearch } from "../../../lib/agent/research-agent";
+import {
+  decodeEventLine,
+  type ResearchEvent,
+} from "../../../lib/agent/research-events";
+import { createResearchRoute } from "./route";
+
+const terminalTypes = new Set<ResearchEvent["type"]>([
+  "report.completed",
+  "research.partial",
+  "research.cancelled",
+  "research.failed",
+]);
+
+async function readRemainingEvents(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  firstChunk: Uint8Array,
+): Promise<{ events: ResearchEvent[]; serialized: string }> {
+  const decoder = new TextDecoder();
+  let serialized = decoder.decode(firstChunk, { stream: true });
+
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    serialized += decoder.decode(next.value, { stream: true });
+  }
+  serialized += decoder.decode();
+
+  return {
+    events: serialized
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => decodeEventLine(`${line}\n`)),
+    serialized,
+  };
+}
+
+async function executeFixture(options: { deferPlan?: boolean } = {}) {
+  const fixture = createResearchFlowFixture(options);
+  const post = createResearchRoute({
+    createModel: () => fixture.model,
+    runResearch,
+    searchWeb: fixture.searchWeb,
+    extractSources: fixture.extractSources,
+  });
+  const response = await post(
+    new Request("http://localhost/api/research", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(researchFlowInput),
+    }),
+  );
+  const reader = response.body!.getReader();
+  const first = await reader.read();
+  if (first.done) throw new Error("Research stream closed before its first event");
+
+  return { fixture, response, reader, firstChunk: first.value };
+}
+
+describe("POST /api/research complete workflow", () => {
+  it("streams a deterministic two-round cited report through the real route and workflow", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const firstRun = await executeFixture({ deferPlan: true });
+
+    expect(decodeEventLine(new TextDecoder().decode(firstRun.firstChunk))).toEqual({
+      type: "plan.started",
+      question: researchFlowInput.question,
+    });
+    expect(firstRun.fixture.planReleased).toBe(false);
+    firstRun.fixture.releasePlan();
+
+    const { events, serialized } = await readRemainingEvents(
+      firstRun.reader,
+      firstRun.firstChunk,
+    );
+    const eventTypes = events.map((event) => event.type);
+    const terminalEvents = events.filter((event) => terminalTypes.has(event.type));
+    const completed = events.at(-1);
+
+    expect(firstRun.response.status).toBe(200);
+    expect(firstRun.response.headers.get("content-type")).toBe(
+      "application/x-ndjson; charset=utf-8",
+    );
+    expect(firstRun.response.headers.get("cache-control")).toBe(
+      "no-cache, no-transform",
+    );
+    expect(firstRun.response.headers.get("x-accel-buffering")).toBe("no");
+    expect(eventTypes.filter((type) => type === "search.started")).toHaveLength(2);
+    expect(eventTypes.filter((type) => type === "search.completed")).toHaveLength(2);
+    expect(eventTypes).toContain("gap.detected");
+    expect(eventTypes.filter((type) => type === "conclusion.updated")).toHaveLength(2);
+    expect(terminalEvents).toHaveLength(1);
+    expect(completed?.type).toBe("report.completed");
+
+    expect(firstRun.fixture.searchCalls).toEqual([
+      { query: researchFlowInitialQuery, timeRange: "year" },
+      { query: researchFlowFollowUpQuery, timeRange: "year" },
+    ]);
+    expect(firstRun.fixture.extractCalls).toHaveLength(2);
+    expect(events.some((event) => event.type === "source.read")).toBe(true);
+
+    const completedSearches = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "search.completed" }> =>
+        event.type === "search.completed",
+    );
+    const collectedSources = completedSearches.flatMap((event) => event.sources);
+    const collectedIds = new Set(collectedSources.map((source) => source.id));
+    const canonicalUrls = collectedSources.map((source) => {
+      const url = new URL(source.url);
+      url.hash = "";
+      url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    });
+    expect(new Set(canonicalUrls).size).toBe(canonicalUrls.length);
+
+    const evaluations = events
+      .filter(
+        (event): event is Extract<ResearchEvent, { type: "source.evaluated" }> =>
+          event.type === "source.evaluated",
+      )
+      .map((event) => event.evaluation);
+    expect(
+      evaluations
+        .filter((item) => item.decision === "accepted")
+        .map((item) => item.sourceId),
+    ).toEqual(researchFlowAcceptedSourceIds);
+    expect(
+      evaluations
+        .filter((item) => item.decision === "rejected")
+        .map((item) => item.sourceId),
+    ).toEqual([researchFlowRejectedSourceId]);
+    expect(new Set(evaluations.map((item) => item.sourceId)).size).toBe(
+      evaluations.length,
+    );
+
+    if (completed?.type !== "report.completed") {
+      throw new Error("Expected a completed report");
+    }
+    const latestEvaluations = new Map(
+      evaluations.map((evaluation) => [evaluation.sourceId, evaluation]),
+    );
+    for (const finding of completed.report.findings) {
+      for (const sourceId of finding.sourceIds) {
+        expect(collectedIds.has(sourceId)).toBe(true);
+        expect(latestEvaluations.get(sourceId)?.decision).toBe("accepted");
+      }
+    }
+    expect(completed.report.findings).toHaveLength(2);
+    expect(completed.report.trends).not.toHaveLength(0);
+    expect(completed.report.disagreements).not.toHaveLength(0);
+    expect(completed.report.limitations).not.toHaveLength(0);
+    expect(
+      completed.report.findings.flatMap((finding) => finding.sourceIds),
+    ).not.toContain(researchFlowRejectedSourceId);
+
+    expect(firstRun.fixture.modelCalls).toEqual([
+      "generatePlan",
+      "evaluateSources",
+      "assessEvidence",
+      "evaluateSources",
+      "assessEvidence",
+      "generateReport",
+    ]);
+    expect(firstRun.fixture.modelOperationCalls).toEqual(
+      firstRun.fixture.modelCalls,
+    );
+    expect(firstRun.fixture.modelSignals).toHaveLength(
+      firstRun.fixture.modelCalls.length,
+    );
+    expect(firstRun.fixture.modelSignals.every((signal) => !signal.aborted)).toBe(
+      true,
+    );
+    expect(firstRun.fixture.toolCalls).toEqual([
+      "searchWeb",
+      "extractSources",
+      "searchWeb",
+      "extractSources",
+    ]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(serialized).not.toMatch(/private\.reasoning|chainOfThought|rawChain/i);
+
+    const secondRun = await executeFixture();
+    const repeated = await readRemainingEvents(
+      secondRun.reader,
+      secondRun.firstChunk,
+    );
+    const repeatedCompleted = repeated.events.at(-1);
+    expect(repeated.events.map((event) => event.type)).toEqual(eventTypes);
+    expect(
+      repeated.events
+        .filter(
+          (event): event is Extract<ResearchEvent, { type: "search.completed" }> =>
+            event.type === "search.completed",
+        )
+        .flatMap((event) => event.sources.map((source) => source.id)),
+    ).toEqual(collectedSources.map((source) => source.id));
+    expect(repeatedCompleted).toEqual(completed);
+  });
+});

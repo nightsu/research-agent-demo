@@ -86,8 +86,8 @@ export function toPublicFailure(error: unknown): {
   return { message: "A research dependency failed.", recoverable: false };
 }
 
-function uniqueSources(sources: Source[]): Source[] {
-  const seen = new Set<string>();
+function uniqueSources(sources: Source[], existing: Source[] = []): Source[] {
+  const seen = new Set(existing.map((source) => canonicalizeUrl(source.url)));
   return sources.filter((source) => {
     const url = canonicalizeUrl(source.url);
     if (seen.has(url)) return false;
@@ -340,6 +340,7 @@ export async function runResearch(
 
       const cappedSources = uniqueSources(
         searchResults.slice(0, limits.maxResultsPerRound),
+        state.sources,
       );
       await transition(
         {

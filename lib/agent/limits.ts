@@ -26,7 +26,7 @@ export const defaultResearchLimits: ResearchLimits = {
 
 export const quickResearchLimits: ResearchLimits = {
   ...defaultResearchLimits,
-  maxSteps: 8,
+  maxSteps: 12,
   maxSearchRounds: 2,
   maxSourcesToRead: 6,
 };
