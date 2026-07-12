@@ -96,6 +96,16 @@ describe("research event protocol", () => {
     expect(() => researchEventSchema.parse({ type: "plan.started", question: "   " })).toThrow();
   });
 
+  it("rejects an oversized public failure message", () => {
+    expect(() =>
+      researchEventSchema.parse({
+        type: "research.failed",
+        message: "x".repeat(501),
+        recoverable: false,
+      }),
+    ).toThrow();
+  });
+
   it.each([
     ["plan.started", { type: "plan.started", question: 42 }],
     ["plan.completed", { type: "plan.completed", plan: { objective: "", subquestions: [], searchQueries: [] } }],

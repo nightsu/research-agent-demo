@@ -226,6 +226,7 @@ export function reduceResearchState(
         evidenceAssessed: false,
         evidenceSufficient: undefined,
         evidenceSummary: undefined,
+        sourcesEvaluated: false,
         sources: state.sources.map((source) =>
           updates.get(canonicalizeUrl(source.url)) ?? source,
         ),

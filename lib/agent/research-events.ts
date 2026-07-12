@@ -69,7 +69,7 @@ export const researchEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("research.failed"),
-    message: nonemptyStringSchema,
+    message: nonemptyStringSchema.max(500),
     recoverable: z.boolean(),
   }),
 ]);

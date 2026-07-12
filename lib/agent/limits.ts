@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export type ResearchLimits = {
   maxSteps: number;
   maxSearchRounds: number;
@@ -5,6 +7,14 @@ export type ResearchLimits = {
   maxSourcesToRead: number;
   requestTimeoutMs: number;
 };
+
+export const researchLimitsSchema = z.strictObject({
+  maxSteps: z.number().finite().int().min(2).max(100),
+  maxSearchRounds: z.number().finite().int().min(0).max(20),
+  maxResultsPerRound: z.number().finite().int().min(0).max(20),
+  maxSourcesToRead: z.number().finite().int().min(0).max(20),
+  requestTimeoutMs: z.number().finite().int().positive().max(120_000),
+});
 
 export const defaultResearchLimits: ResearchLimits = {
   maxSteps: 12,

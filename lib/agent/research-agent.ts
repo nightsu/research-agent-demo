@@ -1,6 +1,9 @@
+import { z } from "zod";
+
 import {
   defaultResearchLimits,
   quickResearchLimits,
+  researchLimitsSchema,
   type ResearchLimits,
 } from "./limits";
 import { researchEventSchema, type ResearchEvent } from "./research-events";
@@ -30,8 +33,10 @@ export interface ResearchDependencies {
   model: ResearchModel;
   searchWeb: typeof defaultSearchWeb;
   extractSources: typeof defaultExtractSources;
+  // Resolving means the event was delivered; rejecting means it was not.
+  // Emitters must never write an event and then reject the same delivery.
   emit: (event: ResearchEvent) => void | Promise<void>;
-  limits?: ResearchLimits;
+  limits?: Partial<ResearchLimits>;
 }
 
 class OperationBudgetError extends Error {
@@ -50,9 +55,35 @@ class RequestTimeoutError extends Error {
   }
 }
 
-function errorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.trim() || "Research failed";
+class ResearchConfigurationError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Invalid research configuration");
+    this.name = "ResearchConfigurationError";
+  }
+}
+
+export function toPublicFailure(error: unknown): {
+  message: string;
+  recoverable: boolean;
+} {
+  if (error instanceof ResearchConfigurationError) {
+    return { message: "Invalid research configuration.", recoverable: false };
+  }
+  if (error instanceof z.ZodError) {
+    return { message: "Invalid research request.", recoverable: false };
+  }
+  if (error instanceof TavilyError) {
+    return error.recoverable
+      ? { message: "The search service is temporarily unavailable.", recoverable: true }
+      : { message: "The search service request failed.", recoverable: false };
+  }
+  if (error instanceof RequestTimeoutError) {
+    return { message: "A research operation timed out.", recoverable: true };
+  }
+  if (error instanceof OperationBudgetError) {
+    return { message: "The research operation budget was exhausted.", recoverable: false };
+  }
+  return { message: "A research dependency failed.", recoverable: false };
 }
 
 function uniqueSources(sources: Source[]): Source[] {
@@ -116,8 +147,8 @@ export async function runResearch(
     state = next;
   };
 
-  const fail = async (error: unknown, recoverable = false): Promise<never> => {
-    const message = errorMessage(error);
+  const fail = async (error: unknown): Promise<never> => {
+    const { message, recoverable } = toPublicFailure(error);
     await transition(
       { type: "research.failed", payload: { error: message } },
       [{ type: "research.failed", message, recoverable }],
@@ -126,17 +157,33 @@ export async function runResearch(
   };
 
   const parsedInput = researchInputSchema.safeParse(rawInput);
-  if (!parsedInput.success) return fail(parsedInput.error, false);
+  if (!parsedInput.success) return fail(parsedInput.error);
   const input = parsedInput.data;
   state = createResearchState(input.question);
 
-  const limits = deps.limits ?? (
-    input.depth === "quick" ? quickResearchLimits : defaultResearchLimits
-  );
+  const baseLimits = input.depth === "quick"
+    ? quickResearchLimits
+    : defaultResearchLimits;
+  const parsedLimits = researchLimitsSchema.safeParse({
+    ...baseLimits,
+    ...deps.limits,
+  });
+  if (!parsedLimits.success) {
+    return fail(new ResearchConfigurationError(parsedLimits.error));
+  }
+  const limits = parsedLimits.data;
   eventTimeoutMs = limits.requestTimeoutMs;
   let operationCount = 0;
   const hasBudget = (operations: number) =>
     operationCount + operations <= limits.maxSteps;
+  const hasAcceptedKnownEvidence = () => {
+    const sourceIds = new Set(state.sources.map((source) => source.id));
+    return state.evaluations.some(
+      (evaluation) =>
+        evaluation.decision === "accepted" &&
+        sourceIds.has(evaluation.sourceId),
+    );
+  };
 
   const invoke = async <T>(
     operation: (abortSignal: AbortSignal) => Promise<T>,
@@ -213,7 +260,7 @@ export async function runResearch(
       {
         type: "research.cancelled",
         payload: {
-          reason: signal?.reason ? errorMessage(signal.reason) : undefined,
+          reason: signal?.reason ? "Research cancelled by caller." : undefined,
         },
       },
       [{ type: "research.cancelled" }],
@@ -336,14 +383,12 @@ export async function runResearch(
         });
 
         if (readSources.length > 0) {
-          await transition(
-            { type: "sources.read", payload: { sources: readSources } },
-            readSources.map((source) => ({
-              type: "source.read",
-              sourceId: source.id,
-              url: source.url,
-            })),
-          );
+          for (const source of readSources) {
+            await transition(
+              { type: "sources.read", payload: { sources: [source] } },
+              [{ type: "source.read", sourceId: source.id, url: source.url }],
+            );
+          }
         }
       }
 
@@ -355,13 +400,17 @@ export async function runResearch(
       const evaluations = await invokeModel((options) =>
         deps.model.evaluateSources(input.question, state.sources, options),
       );
-      await transition(
-        { type: "sources.evaluated", payload: { evaluations } },
-        evaluations.map((item) => ({
-          type: "source.evaluated",
-          evaluation: item,
-        })),
-      );
+      for (const item of evaluations) {
+        await transition(
+          { type: "sources.evaluated", payload: { evaluations: [item] } },
+          [{ type: "source.evaluated", evaluation: item }],
+        );
+      }
+      if (evaluations.length === 0) {
+        await transition(
+          { type: "sources.evaluated", payload: { evaluations: [] } },
+        );
+      }
 
       if (!hasBudget(4)) {
         forcePartial = true;
@@ -380,7 +429,10 @@ export async function runResearch(
         {
           type: "evidence.assessed",
           payload: {
-            sufficient: !forcePartial && assessment.sufficient,
+            sufficient:
+              !forcePartial &&
+              assessment.sufficient &&
+              hasAcceptedKnownEvidence(),
             summary: assessment.summary,
             gaps: assessment.gaps,
           },
@@ -404,10 +456,10 @@ export async function runResearch(
           [{
           type: "gap.detected",
           description,
-          followUpQueries: assessment.followUpQueries,
+          followUpQueries: uniqueFollowUps,
           }],
         );
-        for (const query of uniqueFollowUps.reverse()) {
+        for (const query of [...uniqueFollowUps].reverse()) {
           pendingQueries.unshift({ query, reason: "Evidence gap follow-up" });
         }
       }
@@ -418,13 +470,17 @@ export async function runResearch(
         const evaluations = await invokeModel((options) =>
           deps.model.evaluateSources(input.question, state.sources, options),
         );
-        await transition(
-          { type: "sources.evaluated", payload: { evaluations } },
-          evaluations.map((item) => ({
-            type: "source.evaluated",
-            evaluation: item,
-          })),
-        );
+        for (const item of evaluations) {
+          await transition(
+            { type: "sources.evaluated", payload: { evaluations: [item] } },
+            [{ type: "source.evaluated", evaluation: item }],
+          );
+        }
+        if (evaluations.length === 0) {
+          await transition(
+            { type: "sources.evaluated", payload: { evaluations: [] } },
+          );
+        }
       }
       if (!state.sourcesEvaluated) {
         const summary = "Evidence assessment skipped to preserve report budget.";
@@ -448,7 +504,11 @@ export async function runResearch(
             options,
           ),
         );
-        const sufficient = searchRounds > 0 && !forcePartial && assessment.sufficient;
+        const sufficient =
+          searchRounds > 0 &&
+          !forcePartial &&
+          assessment.sufficient &&
+          hasAcceptedKnownEvidence();
         await transition(
           {
             type: "evidence.assessed",
@@ -511,9 +571,6 @@ export async function runResearch(
     return state;
   } catch (error) {
     if (signal?.aborted) return cancel();
-    const recoverable = error instanceof TavilyError
-      ? error.recoverable
-      : error instanceof RequestTimeoutError;
-    return fail(error, recoverable);
+    return fail(error);
   }
 }

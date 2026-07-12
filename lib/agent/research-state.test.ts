@@ -238,6 +238,32 @@ describe("research workflow state", () => {
     expect(next.phase).toBe("evaluating");
   });
 
+  it("requires fresh evaluation after source content is read", () => {
+    const existing = source("source-1", "https://example.com/docs");
+    const initial = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+      sources: [existing],
+      sourcesEvaluated: true,
+    };
+
+    const read = reduceResearchState(initial, {
+      type: "sources.read",
+      payload: { sources: [{ ...existing, rawContent: "New full text" }] },
+    });
+    const assessedWithoutReevaluation = reduceResearchState(read, {
+      type: "evidence.assessed",
+      payload: { sufficient: true, summary: "Enough.", gaps: [] },
+    });
+
+    expect(read).toMatchObject({
+      sourcesEvaluated: false,
+      evidenceSufficient: undefined,
+      evidenceSummary: undefined,
+    });
+    expect(assessedWithoutReevaluation).toBe(read);
+  });
+
   it.each(terminalCases)("moves $action.type to the $phase terminal phase", ({
     action,
     phase,

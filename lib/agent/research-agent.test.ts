@@ -166,7 +166,13 @@ describe("runResearch", () => {
     await runResearch(input, deps);
 
     expect(searchWeb.mock.calls.map(([query]) => query)).toEqual(["planned query", "follow up"]);
-    expect(events.filter((event) => event.type === "gap.detected")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "gap.detected")).toEqual([
+      {
+        type: "gap.detected",
+        description: "Missing comparison",
+        followUpQueries: ["follow up"],
+      },
+    ]);
   });
 
   it("continues the queued plan when assessment has no follow-up queries", async () => {
@@ -291,7 +297,7 @@ describe("runResearch", () => {
     ]);
     expect(events.at(-1)).toEqual({
       type: "research.failed",
-      message: "second temporary",
+      message: "The search service is temporarily unavailable.",
       recoverable: true,
     });
   });
@@ -365,6 +371,149 @@ describe("runResearch", () => {
     expect(events.some((event) => event.type === "report.completed")).toBe(false);
   });
 
+  it.each([
+    ["NaN steps", { maxSteps: Number.NaN }],
+    ["infinite steps", { maxSteps: Number.POSITIVE_INFINITY }],
+    ["fractional steps", { maxSteps: 2.5 }],
+    ["too few steps", { maxSteps: 1 }],
+    ["negative rounds", { maxSearchRounds: -1 }],
+    ["fractional results", { maxResultsPerRound: 1.5 }],
+    ["negative reads", { maxSourcesToRead: -1 }],
+    ["zero timeout", { requestTimeoutMs: 0 }],
+    ["infinite timeout", { requestTimeoutMs: Number.POSITIVE_INFINITY }],
+    ["too many steps", { maxSteps: 101 }],
+    ["too many rounds", { maxSearchRounds: 21 }],
+    ["too many results", { maxResultsPerRound: 21 }],
+    ["too many reads", { maxSourcesToRead: 21 }],
+    ["timeout above maximum", { requestTimeoutMs: 120_001 }],
+  ])("rejects invalid limits before external calls: %s", async (_label, limits) => {
+    const { deps, events } = harness({ limits });
+
+    await expect(runResearch(input, deps)).rejects.toThrow();
+
+    expect(deps.model.generatePlan).not.toHaveBeenCalled();
+    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "Invalid research configuration.",
+      recoverable: false,
+    });
+  });
+
+  it("accepts zero for optional work caps while preserving report capacity", async () => {
+    const { deps } = harness({
+      limits: {
+        maxSteps: 2,
+        maxSearchRounds: 0,
+        maxResultsPerRound: 0,
+        maxSourcesToRead: 0,
+        requestTimeoutMs: 1,
+      },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(deps.model.generatePlan).toHaveBeenCalledTimes(1);
+    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(state.phase).toBe("partial");
+  });
+
+  it("sanitizes dependency failures while rejecting the original error", async () => {
+    const secret = "SECRET_API_KEY raw provider request payload";
+    const error = new Error(secret);
+    const researchModel = model({ generatePlan: vi.fn(async () => { throw error; }) });
+    const { deps, events } = harness({ model: researchModel });
+
+    await expect(runResearch(input, deps)).rejects.toBe(error);
+
+    const failure = events.at(-1);
+    expect(failure).toEqual({
+      type: "research.failed",
+      message: "A research dependency failed.",
+      recoverable: false,
+    });
+    expect(JSON.stringify(failure)).not.toContain(secret);
+  });
+
+  it("commits each source.read event independently before a later delivery fails", async () => {
+    const events: ResearchEvent[] = [];
+    let readCount = 0;
+    const emit = vi.fn(async (event: ResearchEvent) => {
+      if (event.type === "source.read" && ++readCount === 2) {
+        throw new Error("second read delivery failed");
+      }
+      events.push(researchEventSchema.parse(event));
+    });
+    const extractSources = vi.fn(async (urls: string[]) =>
+      new Map(urls.map((url, index) => [url, `Content ${index}`])),
+    );
+    const { deps } = harness({
+      emit,
+      extractSources,
+      searchWeb: vi.fn(async () => [source("one"), source("two")]),
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow("second read delivery failed");
+
+    expect(events.filter((event) => event.type === "source.read")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "research.failed" });
+  });
+
+  it("commits each source.evaluated event independently before a later delivery fails", async () => {
+    const events: ResearchEvent[] = [];
+    let evaluationCount = 0;
+    const emit = vi.fn(async (event: ResearchEvent) => {
+      if (event.type === "source.evaluated" && ++evaluationCount === 2) {
+        throw new Error("second evaluation delivery failed");
+      }
+      events.push(researchEventSchema.parse(event));
+    });
+    const { deps } = harness({
+      emit,
+      searchWeb: vi.fn(async () => [source("one"), source("two")]),
+      extractSources: vi.fn(async () => new Map()),
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow(
+      "second evaluation delivery failed",
+    );
+
+    expect(events.filter((event) => event.type === "source.evaluated")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "research.failed" });
+  });
+
+  it("returns partial when the model claims sufficiency without any source", async () => {
+    const { deps, events } = harness({
+      searchWeb: vi.fn(async () => []),
+      extractSources: vi.fn(async () => new Map()),
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(state.evidenceSufficient).toBe(false);
+    expect(state.phase).toBe("partial");
+    expect(events.at(-1)?.type).toBe("research.partial");
+  });
+
+  it("returns partial when all known source evaluations are rejected", async () => {
+    const researchModel = model({
+      evaluateSources: vi.fn(async (_question, sources) =>
+        sources.map((item: Source) => ({
+          ...evaluation(item.id),
+          decision: "rejected" as const,
+        })),
+      ),
+      generateReport: vi.fn(async () => ({ ...reportFor("unused"), findings: [] })),
+    });
+    const { deps, events } = harness({ model: researchModel });
+
+    const state = await runResearch(input, deps);
+
+    expect(state.evidenceSufficient).toBe(false);
+    expect(state.phase).toBe("partial");
+    expect(events.at(-1)?.type).toBe("research.partial");
+  });
+
   it("marks exhausted recoverable Tavily failures as recoverable", async () => {
     const searchWeb = vi.fn(async () => {
       throw new TavilyError("temporary", { recoverable: true });
@@ -374,7 +523,11 @@ describe("runResearch", () => {
     await expect(runResearch(input, deps)).rejects.toThrow("temporary");
 
     expect(searchWeb).toHaveBeenCalledTimes(2);
-    expect(events.at(-1)).toEqual({ type: "research.failed", message: "temporary", recoverable: true });
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "The search service is temporarily unavailable.",
+      recoverable: true,
+    });
   });
 
   it("emits a nonempty fallback message and preserves an empty-message error", async () => {
@@ -386,7 +539,7 @@ describe("runResearch", () => {
 
     expect(events.at(-1)).toEqual({
       type: "research.failed",
-      message: "Research failed",
+      message: "A research dependency failed.",
       recoverable: false,
     });
   });
@@ -404,7 +557,7 @@ describe("runResearch", () => {
 
     expect(events.at(-1)).toEqual({
       type: "research.failed",
-      message: "stream closed",
+      message: "A research dependency failed.",
       recoverable: false,
     });
   });
@@ -568,6 +721,26 @@ describe("runResearch", () => {
 
     expect(receivedSignal?.aborted).toBe(true);
     expect(events.at(-1)).toMatchObject({ type: "research.failed", recoverable: true });
+  });
+
+  it("times out a pending event delivery and emits a sanitized failure", async () => {
+    const events: ResearchEvent[] = [];
+    const emit = vi.fn((event: ResearchEvent) => {
+      if (event.type === "plan.started") return new Promise<void>(() => {});
+      events.push(researchEventSchema.parse(event));
+    });
+    const { deps } = harness({
+      emit,
+      limits: { requestTimeoutMs: 5 },
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow(/timed out/i);
+
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "A research operation timed out.",
+      recoverable: true,
+    });
   });
 
   it("rejects invalid input before making external calls and emits failure", async () => {
