@@ -75,6 +75,41 @@ function responseFromChunks(
   } as Response;
 }
 
+function responseFromByteChunks(
+  chunks: Uint8Array[],
+  onReaderCancel?: () => void,
+): Response {
+  let index = 0;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (index === chunks.length) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunks[index++]);
+      },
+    }),
+  );
+
+  if (!onReaderCancel) return response;
+  const reader = response.body!.getReader();
+  return {
+    ok: true,
+    body: {
+      getReader() {
+        return {
+          read: () => reader.read(),
+          cancel: async () => {
+            onReaderCancel();
+            await reader.cancel();
+          },
+        };
+      },
+    },
+  } as Response;
+}
+
 function deferredResponse() {
   const encoder = new TextEncoder();
   let controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -139,6 +174,66 @@ describe("useResearchStream", () => {
     });
   });
 
+  it("reassembles a multibyte Chinese value split inside one UTF-8 code point", async () => {
+    const chineseEvent: ResearchEvent = {
+      type: "conclusion.updated",
+      summary: "浏览器渲染正在变化。",
+    };
+    const terminal: ResearchEvent = { type: "report.completed", report };
+    const payload = `${line(chineseEvent)}${line(terminal)}`;
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(payload);
+    const chineseStart = encoder.encode(payload.slice(0, payload.indexOf("浏"))).length;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromByteChunks([
+          bytes.slice(0, chineseStart + 1),
+          bytes.slice(chineseStart + 1),
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run).toEqual({
+      status: "completed",
+      events: [chineseEvent, terminal],
+    });
+  });
+
+  it("fails safely on malformed UTF-8 while preserving prior valid events", async () => {
+    const prior: ResearchEvent = {
+      type: "plan.started",
+      question: input.question,
+    };
+    const cancelled = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromByteChunks(
+          [
+            new TextEncoder().encode(line(prior)),
+            Uint8Array.from([0xe4, 0xb8, 0x0a]),
+          ],
+          cancelled,
+        ),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run).toEqual({
+      status: "failed",
+      events: [prior],
+      error: "Research stream protocol error.",
+    });
+    expect(result.current.run.error).not.toContain("228");
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["research.partial", "partial"],
     ["research.cancelled", "cancelled"],
@@ -186,6 +281,39 @@ describe("useResearchStream", () => {
     act(() => stream.enqueue(line({ type: "research.cancelled" })));
     act(() => stream.close());
     await act(() => promise);
+  });
+
+  it("applies schema defaults while preserving explicit input options", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        responseFromChunks([line({ type: "research.cancelled" })]),
+      )
+      .mockResolvedValueOnce(
+        responseFromChunks([line({ type: "research.cancelled" })]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() =>
+      result.current.start({
+        question: input.question,
+      } as unknown as ResearchInput),
+    );
+    await act(() =>
+      result.current.start({ ...input, timeRange: "week", depth: "deep" }),
+    );
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      question: input.question,
+      timeRange: "year",
+      depth: "quick",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      question: input.question,
+      timeRange: "week",
+      depth: "deep",
+    });
   });
 
   it("fails safely for invalid input before fetching", async () => {
