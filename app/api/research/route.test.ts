@@ -8,7 +8,11 @@ import {
 import type { ResearchState } from "../../../lib/agent/research-state";
 import type { ResearchInput } from "../../../lib/agent/research-types";
 import type { ResearchModel } from "../../../lib/providers/research-model";
-import { createResearchRoute, type ResearchRouteDependencies } from "./route";
+import {
+  createResearchRoute,
+  type ResearchRouteDependencies,
+} from "../../../lib/server/research-route";
+import * as routeModule from "./route";
 
 const question = "研究型智能体如何可靠地流式返回阶段性结果？";
 
@@ -64,6 +68,10 @@ async function readEvents(response: Response): Promise<ResearchEvent[]> {
 }
 
 describe("POST /api/research", () => {
+  it("exports only Next-supported route fields", () => {
+    expect(Object.keys(routeModule).sort()).toEqual(["POST", "maxDuration"]);
+  });
+
   it.each([
     ["malformed JSON", "{"],
     ["null", "null"],

@@ -14,7 +14,7 @@ import {
   type ResearchEvent,
 } from "../../../lib/agent/research-events";
 import type { ResearchState } from "../../../lib/agent/research-state";
-import { createResearchRoute } from "./route";
+import { createResearchRoute } from "../../../lib/server/research-route";
 
 const terminalTypes = new Set<ResearchEvent["type"]>([
   "report.completed",
