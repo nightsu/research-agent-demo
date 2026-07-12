@@ -103,6 +103,8 @@ textarea::placeholder { color: #8a918e; }
 .workspace-header { align-items: flex-end; padding-bottom: 24px; border-bottom: 1px solid var(--line); }
 .workspace-header h1 { margin-bottom: 0; font-size: clamp(2rem, 4vw, 3.8rem); }
 .error-banner { margin: 20px 0 0; padding: 13px 16px; border: 1px solid #deb1ab; border-radius: 12px; background: var(--danger-soft); color: #732c25; font-weight: 650; }
+.run-status { width: fit-content; margin: 18px 0 0; padding: 7px 11px; border-radius: 999px; background: var(--teal-soft); color: var(--teal-dark); font-size: 0.76rem; font-weight: 750; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .workspace-grid { display: grid; grid-template-columns: minmax(240px, 0.34fr) minmax(0, 1fr); gap: 36px; align-items: start; margin-top: 32px; }
 .progress-panel {
   position: sticky; top: 24px; padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255, 253, 248, 0.82); backdrop-filter: blur(12px);
@@ -137,9 +139,9 @@ textarea::placeholder { color: #8a918e; }
 .event-card h3 { margin: 0 0 5px; overflow-wrap: anywhere; font-size: 0.94rem; }
 .event-card p:not(.event-label) { margin: 4px 0; color: var(--ink-muted); font-size: 0.82rem; }
 .event-card .event-meta { color: var(--blue); }
-details { margin-top: 11px; border-top: 1px solid #ebe8df; padding-top: 9px; }
-summary { color: var(--ink-muted); font-size: 0.72rem; font-weight: 700; cursor: pointer; }
-pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #eef0ec; color: #28332f; font: 0.68rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-card details { margin-top: 11px; border-top: 1px solid #ebe8df; padding-top: 9px; }
+.event-card summary { color: var(--ink-muted); font-size: 0.72rem; font-weight: 700; cursor: pointer; }
+.event-card pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #eef0ec; color: #28332f; font: 0.68rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty-note { padding: 28px 0 10px; color: var(--ink-muted); text-align: center; }
 
 .research-report { max-width: 80ch; margin-right: auto; margin-left: auto; padding: clamp(26px, 5vw, 52px); }

@@ -1,8 +1,5 @@
-"use client";
-
-import { useEffect, useRef } from "react";
-
 import type { Source, SourceEvaluation } from "@/lib/agent/research-types";
+import { sourceDomId } from "./research-view-model";
 
 export interface SourceCardProps {
   source: Source;
@@ -17,18 +14,9 @@ export function SourceCard({
   selected,
   citationNumber,
 }: SourceCardProps) {
-  const ref = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    if (!selected) return;
-    ref.current?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-    ref.current?.focus({ preventScroll: true });
-  }, [selected]);
-
   return (
     <article
-      ref={ref}
-      id={`source-${source.id}`}
+      id={sourceDomId(source.id)}
       className="source-card"
       aria-label={source.title}
       data-selected={selected ? "true" : "false"}
@@ -50,6 +38,7 @@ export function SourceCard({
       {evaluation ? <p className="source-reason">{evaluation.reason}</p> : null}
       <a href={source.url} target="_blank" rel="noopener noreferrer">
         Open source <span aria-hidden="true">↗</span>
+        <span className="visually-hidden"> (opens in a new tab)</span>
       </a>
     </article>
   );

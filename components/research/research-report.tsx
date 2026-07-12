@@ -2,15 +2,16 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { ResearchReport, Source } from "@/lib/agent/research-types";
+import { buildCitationNumbers } from "./research-view-model";
 
 export interface ResearchReportViewProps {
   report: ResearchReport;
   sources: Source[];
+  citationNumbers?: Map<string, number>;
   onCitation(sourceId: string): void;
 }
 
-export function ResearchReportView({ report, sources, onCitation }: ResearchReportViewProps) {
-  const citationNumbers = new Map(sources.map((source, index) => [source.id, index + 1]));
+export function ResearchReportView({ report, sources, citationNumbers = buildCitationNumbers(sources), onCitation }: ResearchReportViewProps) {
 
   return (
     <article className="research-report" aria-labelledby="report-title">
@@ -73,6 +74,8 @@ function ReportList({ title, items }: { title: string; items: string[] }) {
 
 const markdownComponents = {
   a: ({ href, children }: React.ComponentPropsWithoutRef<"a">) => (
-    <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}<span className="visually-hidden"> (opens in a new tab)</span>
+    </a>
   ),
 };

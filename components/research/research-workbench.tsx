@@ -1,57 +1,52 @@
 "use client";
 
-import { useMemo, useState } from "react";
-
-import type { ResearchEvent } from "@/lib/agent/research-events";
-import type { ResearchReport, Source, SourceEvaluation } from "@/lib/agent/research-types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { EventTimeline } from "./event-timeline";
 import { ResearchForm } from "./research-form";
 import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
+import {
+  deriveResearchViewModel,
+  runStatusLabel,
+  sourceDomId,
+} from "./research-view-model";
 import { SourceCard } from "./source-card";
-import { useResearchStream } from "./use-research-stream";
-
-export interface ResearchViewModel {
-  sources: Source[];
-  evaluations: Map<string, SourceEvaluation>;
-  report?: ResearchReport;
-}
-
-export function deriveResearchViewModel(events: ResearchEvent[]): ResearchViewModel {
-  const sources: Source[] = [];
-  const sourceKeys = new Set<string>();
-  const evaluations = new Map<string, SourceEvaluation>();
-  let report: ResearchReport | undefined;
-
-  for (const event of events) {
-    if (event.type === "search.completed") {
-      for (const source of event.sources) {
-        if (sourceKeys.has(source.id) || sourceKeys.has(source.url)) continue;
-        sourceKeys.add(source.id);
-        sourceKeys.add(source.url);
-        sources.push(source);
-      }
-    } else if (event.type === "source.evaluated") {
-      evaluations.set(event.evaluation.sourceId, event.evaluation);
-    } else if (event.type === "report.completed" || event.type === "research.partial") {
-      report = event.report;
-    }
-  }
-
-  return report ? { sources, evaluations, report } : { sources, evaluations };
-}
+import { useResearchStream, type ResearchRunStatus } from "./use-research-stream";
 
 export function ResearchWorkbench() {
   const { run, start, cancel, reset } = useResearchStream();
   const [selectedSource, setSelectedSource] = useState<string>();
-  const view = useMemo(() => deriveResearchViewModel(run.events), [run.events]);
+  const view = useMemo(
+    () => deriveResearchViewModel(run.events, run.status),
+    [run.events, run.status],
+  );
+  const statusRef = useRef<HTMLParagraphElement>(null);
+  const previousStatus = useRef<ResearchRunStatus>(run.status);
   const active = run.status === "running";
   const effectiveSelectedSource = view.sources.some(
     (source) => source.id === selectedSource,
   )
     ? selectedSource
     : undefined;
+
+  useEffect(() => {
+    if (previousStatus.current === "running" && run.status === "cancelled") {
+      statusRef.current?.focus();
+    }
+    previousStatus.current = run.status;
+  }, [run.status]);
+
+  const navigateToCitation = useCallback(
+    (sourceId: string) => {
+      const identity = view.sourceIdentityById.get(sourceId) ?? sourceId;
+      setSelectedSource(identity);
+      const target = document.getElementById(sourceDomId(identity));
+      target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      target?.focus({ preventScroll: true });
+    },
+    [view.sourceIdentityById],
+  );
 
   if (run.status === "idle") {
     return (
@@ -99,14 +94,23 @@ export function ResearchWorkbench() {
 
       {run.error ? <div className="error-banner" role="alert">{run.error}</div> : null}
 
+      <p
+        ref={statusRef}
+        className="run-status"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        tabIndex={-1}
+      >
+        {runStatusLabel[run.status]}. Latest event: {view.latestEventLabel}.
+      </p>
+
       <div className="workspace-grid">
-        <ResearchProgress events={run.events} status={run.status} />
+        <ResearchProgress viewModel={view} status={run.status} />
         <div className="workspace-content">
           <section
             className="timeline-section"
             aria-label="Research timeline"
-            aria-live="polite"
-            aria-busy={active}
           >
             <div className="section-heading">
               <div><p className="eyebrow">Event stream</p><h2>How the research unfolded</h2></div>
@@ -119,7 +123,8 @@ export function ResearchWorkbench() {
             <ResearchReportView
               report={view.report}
               sources={view.sources}
-              onCitation={setSelectedSource}
+              citationNumbers={view.citationNumbers}
+              onCitation={navigateToCitation}
             />
           ) : null}
 

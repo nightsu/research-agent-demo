@@ -8,6 +8,7 @@ import { EventTimeline } from "./event-timeline";
 import { ResearchForm } from "./research-form";
 import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
+import { deriveResearchViewModel } from "./research-view-model";
 import { ResearchWorkbench } from "./research-workbench";
 
 const source: Source = {
@@ -146,7 +147,12 @@ describe("ResearchForm", () => {
 
 describe("observable research views", () => {
   it("shows plan phases, counters, and status text without relying on color", () => {
-    render(<ResearchProgress events={completedEvents} status="running" />);
+    render(
+      <ResearchProgress
+        viewModel={deriveResearchViewModel(completedEvents, "running")}
+        status="running"
+      />,
+    );
     expect(screen.getByText("Research running")).toBeInTheDocument();
     expect(screen.getByText("Planning")).toBeInTheDocument();
     expect(screen.getByText("Searching")).toBeInTheDocument();
@@ -155,6 +161,33 @@ describe("observable research views", () => {
     expect(screen.getByText((_, element) => element?.textContent === "1 accepted")).toBeInTheDocument();
     expect(screen.getByText((_, element) => element?.textContent === "0 rejected")).toBeInTheDocument();
     expect(screen.getByText((_, element) => element?.textContent === "1 source")).toBeInTheDocument();
+  });
+
+  it("marks searching current when a follow-up search starts after evaluation", () => {
+    const loopEvents: ResearchEvent[] = [
+      ...completedEvents.slice(0, 6),
+      {
+        type: "gap.detected",
+        description: "Need independent confirmation",
+        followUpQueries: ["follow-up evidence"],
+      },
+      {
+        type: "search.started",
+        query: "follow-up evidence",
+        reason: "Close the evidence gap",
+      },
+    ];
+    render(
+      <ResearchProgress
+        viewModel={deriveResearchViewModel(loopEvents, "running")}
+        status="running"
+      />,
+    );
+
+    expect(screen.getByText("Searching").closest("li")).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
   });
 
   it("renders chronological event details and keeps safe raw JSON closed", () => {
@@ -212,10 +245,11 @@ describe("ResearchWorkbench", () => {
     rerender(<ResearchWorkbench />);
     fireEvent.click(screen.getByRole("button", { name: /stop research/i }));
     expect(cancel).toHaveBeenCalledOnce();
-    expect(screen.getByRole("region", { name: /research timeline/i })).toHaveAttribute(
-      "aria-live",
-      "polite",
-    );
+    const timeline = screen.getByRole("region", { name: /research timeline/i });
+    expect(timeline).not.toHaveAttribute("aria-live");
+    expect(timeline).not.toHaveAttribute("aria-busy");
+    expect(screen.getByRole("status")).toHaveAttribute("aria-atomic", "true");
+    expect(screen.getByRole("status")).toHaveTextContent(/research running.*source read/i);
   });
 
   it("keeps prior events on failure and supports a new research reset", () => {
@@ -256,6 +290,38 @@ describe("ResearchWorkbench", () => {
     mockedRun = { status: "cancelled", events: [{ type: "research.cancelled" }] };
     rerender(<ResearchWorkbench />);
     expect(screen.getAllByText(/cancelled/i).length).toBeGreaterThan(0);
+  });
+
+  it("focuses and announces the status after a running research is cancelled", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, 5) };
+    const { rerender } = render(<ResearchWorkbench />);
+    fireEvent.click(screen.getByRole("button", { name: /stop research/i }));
+
+    mockedRun = { status: "cancelled", events: [{ type: "research.cancelled" }] };
+    rerender(<ResearchWorkbench />);
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/research cancelled/i);
+    expect(status).toHaveFocus();
+  });
+
+  it("focuses and scrolls the cited source on every citation click", () => {
+    mockedRun = { status: "completed", events: completedEvents };
+    render(<ResearchWorkbench />);
+    const sourceCard = screen.getByRole("article", { name: source.title });
+    const scrollIntoView = vi.fn();
+    const focus = vi.spyOn(sourceCard as HTMLElement, "focus");
+    Object.defineProperty(sourceCard, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const citation = screen.getByRole("button", { name: /source 1/i });
+
+    fireEvent.click(citation);
+    fireEvent.click(citation);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(focus).toHaveBeenCalledTimes(2);
   });
 });
 
