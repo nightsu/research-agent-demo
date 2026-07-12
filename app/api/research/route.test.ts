@@ -263,6 +263,183 @@ describe("POST /api/research", () => {
     ]);
   });
 
+  it("adds one failed terminal event when research rejects after progress", async () => {
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        throw new Error("provider secret and stack trace");
+      },
+    );
+    const { post } = harness(run);
+
+    const events = await readEvents(await post(jsonRequest({ question })));
+
+    expect(events).toEqual([
+      { type: "plan.started", question },
+      {
+        type: "research.failed",
+        message: "The research request failed.",
+        recoverable: false,
+      },
+    ]);
+  });
+
+  it("rejects events after the first terminal event", async () => {
+    let rejectedAfterTerminal = false;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({ type: "research.cancelled" });
+        try {
+          await dependencies.emit({
+            type: "plan.started",
+            question: input.question,
+          });
+        } catch {
+          rejectedAfterTerminal = true;
+        }
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+
+    const events = await readEvents(await post(jsonRequest({ question })));
+    const terminals = events.filter((event) =>
+      [
+        "report.completed",
+        "research.partial",
+        "research.cancelled",
+        "research.failed",
+      ].includes(event.type),
+    );
+
+    expect(rejectedAfterTerminal).toBe(true);
+    expect(events).toEqual([{ type: "research.cancelled" }]);
+    expect(terminals).toHaveLength(1);
+  });
+
+  it("holds a second emit until stream capacity is pulled", async () => {
+    let secondAttempted!: () => void;
+    const attempted = new Promise<void>((resolve) => {
+      secondAttempted = resolve;
+    });
+    let secondDelivered = false;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        secondAttempted();
+        await dependencies.emit({ type: "research.cancelled" });
+        secondDelivered = true;
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+    const response = await post(jsonRequest({ question }));
+
+    await attempted;
+    await Promise.resolve();
+    expect(secondDelivered).toBe(false);
+
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = await reader.read();
+    await vi.waitFor(() => expect(secondDelivered).toBe(true));
+    const second = await reader.read();
+    const end = await reader.read();
+
+    expect(decodeEventLine(decoder.decode(first.value))).toEqual({
+      type: "plan.started",
+      question,
+    });
+    expect(decodeEventLine(decoder.decode(second.value))).toEqual({
+      type: "research.cancelled",
+    });
+    expect(end.done).toBe(true);
+  });
+
+  it("rejects a capacity-blocked emit when the consumer cancels", async () => {
+    let secondAttempted!: () => void;
+    const attempted = new Promise<void>((resolve) => {
+      secondAttempted = resolve;
+    });
+    let blockedEmitRejected = false;
+    let workflowSignal!: AbortSignal;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies, signal) => {
+        workflowSignal = signal!;
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        secondAttempted();
+        try {
+          await dependencies.emit({ type: "research.cancelled" });
+        } catch {
+          blockedEmitRejected = true;
+        }
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+    const response = await post(jsonRequest({ question }));
+
+    await attempted;
+    const reader = response.body!.getReader();
+    await reader.cancel("consumer left");
+    await run.mock.results[0].value;
+
+    expect(blockedEmitRejected).toBe(true);
+    expect(workflowSignal.aborted).toBe(true);
+    expect(workflowSignal.reason).toBe("consumer left");
+  });
+
+  it("allows only one cancelled terminal event after request abort", async () => {
+    let workflowStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      workflowStarted = resolve;
+    });
+    let nonCancellationRejected = false;
+    let afterTerminalRejected = false;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies, signal) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        workflowStarted();
+        await new Promise<void>((resolve) =>
+          signal!.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        try {
+          await dependencies.emit({
+            type: "search.started",
+            query: "late query",
+            reason: "abort race",
+          });
+        } catch {
+          nonCancellationRejected = true;
+        }
+        await dependencies.emit({ type: "research.cancelled" });
+        try {
+          await dependencies.emit({
+            type: "plan.started",
+            question: input.question,
+          });
+        } catch {
+          afterTerminalRejected = true;
+        }
+        return emptyState(input);
+      },
+    );
+    const controller = new AbortController();
+    const { post } = harness(run);
+    const response = await post(jsonRequest({ question }, controller.signal));
+
+    await started;
+    controller.abort("request stopped");
+    const events = await readEvents(response);
+
+    expect(nonCancellationRejected).toBe(true);
+    expect(afterTerminalRejected).toBe(true);
+    expect(events).toEqual([
+      { type: "plan.started", question },
+      { type: "research.cancelled" },
+    ]);
+  });
+
   it("emits one sanitized failure when the workflow rejects before any event", async () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(async () => {
       throw new Error("provider secret and stack trace");

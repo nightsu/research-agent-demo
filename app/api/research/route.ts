@@ -37,6 +37,15 @@ const terminalEventTypes = new Set<ResearchEvent["type"]>([
   "research.failed",
 ]);
 
+function isAbortFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
+}
+
 export interface ResearchRouteDependencies {
   createModel: () => ResearchModel;
   runResearch: typeof runResearch;
@@ -70,19 +79,35 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
       return safeJsonError("研究服务暂时不可用，请稍后重试。", 500);
     }
 
-    const workflowController = new AbortController();
-    const onRequestAbort = () =>
-      workflowController.abort(request.signal.reason);
-
-    if (request.signal.aborted) onRequestAbort();
-    else request.signal.addEventListener("abort", onRequestAbort, { once: true });
-
     const encoder = new TextEncoder();
+    const workflowController = new AbortController();
     let writable = true;
     let closed = false;
     let cleanedUp = false;
-    let eventCount = 0;
     let terminalEvent: ResearchEvent["type"] | null = null;
+    let capacityWaiter: {
+      resolve: () => void;
+      reject: (reason: unknown) => void;
+    } | null = null;
+
+    const closedReason = () =>
+      workflowController.signal.reason ?? new Error("Research stream is closed");
+
+    const rejectCapacityWaiter = (reason: unknown) => {
+      const waiter = capacityWaiter;
+      capacityWaiter = null;
+      waiter?.reject(reason);
+    };
+
+    const onRequestAbort = () => {
+      if (!workflowController.signal.aborted) {
+        workflowController.abort(request.signal.reason);
+      }
+      rejectCapacityWaiter(closedReason());
+    };
+
+    if (request.signal.aborted) onRequestAbort();
+    else request.signal.addEventListener("abort", onRequestAbort, { once: true });
 
     const cleanup = () => {
       if (cleanedUp) return;
@@ -92,14 +117,36 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        const emit = async (event: ResearchEvent): Promise<void> => {
-          if (!writable || workflowController.signal.aborted && !request.signal.aborted) {
-            throw workflowController.signal.reason ?? new Error("Stream is closed");
+        const assertCanEmit = (event: ResearchEvent) => {
+          if (!writable) throw closedReason();
+          if (terminalEvent !== null) {
+            throw new Error(`Research terminal event already emitted: ${terminalEvent}`);
+          }
+          if (
+            workflowController.signal.aborted &&
+            event.type !== "research.cancelled"
+          ) {
+            throw closedReason();
+          }
+        };
+
+        const waitForCapacity = async (): Promise<void> => {
+          if ((controller.desiredSize ?? 0) > 0) return;
+          if (capacityWaiter !== null) {
+            throw new Error("Concurrent research event delivery is not supported");
           }
 
+          await new Promise<void>((resolve, reject) => {
+            capacityWaiter = { resolve, reject };
+          });
+        };
+
+        const emit = async (event: ResearchEvent): Promise<void> => {
+          assertCanEmit(event);
           const encoded = encoder.encode(encodeEvent(event));
+          await waitForCapacity();
+          assertCanEmit(event);
           controller.enqueue(encoded);
-          eventCount += 1;
           if (terminalEventTypes.has(event.type)) terminalEvent = event.type;
         };
 
@@ -114,16 +161,19 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
             },
             workflowController.signal,
           )
-          .catch(() => {
+          .catch(async (error: unknown) => {
             if (
-              writable &&
-              !workflowController.signal.aborted &&
-              eventCount === 0 &&
-              terminalEvent === null
+              !writable ||
+              workflowController.signal.aborted ||
+              isAbortFailure(error) ||
+              terminalEvent !== null
             ) {
-              controller.enqueue(encoder.encode(encodeEvent(FALLBACK_FAILURE)));
-              eventCount += 1;
-              terminalEvent = FALLBACK_FAILURE.type;
+              return;
+            }
+            try {
+              await emit(FALLBACK_FAILURE);
+            } catch {
+              // Cancellation or a concurrent close can make the stream unwritable.
             }
           })
           .finally(() => {
@@ -131,13 +181,20 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
             if (writable && !closed) {
               closed = true;
               writable = false;
+              rejectCapacityWaiter(new Error("Research workflow completed"));
               controller.close();
             }
           });
       },
+      pull() {
+        const waiter = capacityWaiter;
+        capacityWaiter = null;
+        waiter?.resolve();
+      },
       cancel(reason) {
         writable = false;
         closed = true;
+        rejectCapacityWaiter(reason ?? new Error("Research stream cancelled"));
         cleanup();
         if (!workflowController.signal.aborted) {
           workflowController.abort(reason);
