@@ -108,7 +108,11 @@ describe("research workflow state", () => {
     });
     const assessed = reduceResearchState(evaluated, {
       type: "evidence.assessed",
-      payload: { summary: "More evidence is required." },
+      payload: {
+        sufficient: false,
+        summary: "More evidence is required.",
+        gaps: ["More evidence is required."],
+      },
     });
     const afterGap = reduceResearchState(assessed, {
       type: "gap.detected",
@@ -154,7 +158,11 @@ describe("research workflow state", () => {
     });
     const assessed = reduceResearchState(evaluated, {
       type: "evidence.assessed",
-      payload: { summary: "The second planned query is still needed." },
+      payload: {
+        sufficient: false,
+        summary: "The second planned query is still needed.",
+        gaps: [],
+      },
     });
 
     const secondSearchStarted = reduceResearchState(assessed, {
@@ -314,6 +322,30 @@ describe("research workflow state", () => {
 
     expect(lateRead).toBe(assessed);
     expect(lateEvaluation).toBe(assessed);
+  });
+
+  it("stores the latest evidence sufficiency and observable summary", () => {
+    const evaluated = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+      sourcesEvaluated: true,
+    };
+
+    const assessed = reduceResearchState(evaluated, {
+      type: "evidence.assessed",
+      payload: {
+        sufficient: false,
+        summary: "A primary source is still missing.",
+        gaps: ["Missing primary source"],
+      },
+    });
+
+    expect(assessed).toMatchObject({
+      evidenceAssessed: true,
+      evidenceSufficient: false,
+      evidenceSummary: "A primary source is still missing.",
+      gaps: ["Missing primary source"],
+    });
   });
 
   it.each(["completed", "partial", "cancelled", "failed"] as const)(

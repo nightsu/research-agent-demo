@@ -135,6 +135,8 @@ export async function runResearch(
   );
   eventTimeoutMs = limits.requestTimeoutMs;
   let operationCount = 0;
+  const hasBudget = (operations: number) =>
+    operationCount + operations <= limits.maxSteps;
 
   const invoke = async <T>(
     operation: (abortSignal: AbortSignal) => Promise<T>,
@@ -243,16 +245,16 @@ export async function runResearch(
 
     const attemptedReadUrls = new Set<string>();
     let searchRounds = 0;
-    let evidenceSufficient = false;
+    let recoverableSearchRetryUsed = false;
+    let forcePartial = false;
     let partialReason = "No additional search queries were available";
 
     // This loop is intentionally explicit instead of delegated to ToolLoopAgent.
     // Each boundary becomes a stable UI event and a testable teaching checkpoint,
     // while the model still decides the research plan, evidence quality, and gaps.
     while (pendingQueries.length > 0 && searchRounds < limits.maxSearchRounds) {
-      // Preserve enough operations for search, evaluation, assessment, and
-      // report generation. Extraction uses an additional slot when available.
-      if (operationCount + 4 > limits.maxSteps) {
+      // Every nonterminal stage preserves two calls for a final report repair.
+      if (!hasBudget(3)) {
         partialReason = "Research operation step limit reached";
         break;
       }
@@ -276,12 +278,17 @@ export async function runResearch(
         if (!(error instanceof TavilyError) || !error.recoverable || signal?.aborted) {
           throw error;
         }
-        // A retry is useful only when the remaining budget can still evaluate,
-        // assess, and synthesize the successful result.
-        if (operationCount + 4 > limits.maxSteps) throw error;
-        searchResults = await invoke((abortSignal) =>
-          deps.searchWeb(nextQuery.query, { timeRange: input.timeRange }, abortSignal),
-        );
+        if (recoverableSearchRetryUsed) throw error;
+        if (!hasBudget(3)) {
+          searchResults = [];
+          forcePartial = true;
+          partialReason = "Research operation step limit reached";
+        } else {
+          recoverableSearchRetryUsed = true;
+          searchResults = await invoke((abortSignal) =>
+            deps.searchWeb(nextQuery.query, { timeRange: input.timeRange }, abortSignal),
+          );
+        }
       }
 
       const cappedSources = uniqueSources(
@@ -310,7 +317,7 @@ export async function runResearch(
           Math.max(0, limits.maxSourcesToRead - attemptedReadUrls.size),
         );
 
-      if (unread.length > 0 && operationCount + 4 <= limits.maxSteps) {
+      if (unread.length > 0 && !forcePartial && hasBudget(3)) {
         unread.forEach((source) =>
           attemptedReadUrls.add(canonicalizeUrl(source.url)),
         );
@@ -340,6 +347,11 @@ export async function runResearch(
         }
       }
 
+      if (!hasBudget(4)) {
+        forcePartial = true;
+        partialReason = "Research operation step limit reached";
+        break;
+      }
       const evaluations = await invokeModel((options) =>
         deps.model.evaluateSources(input.question, state.sources, options),
       );
@@ -351,6 +363,11 @@ export async function runResearch(
         })),
       );
 
+      if (!hasBudget(4)) {
+        forcePartial = true;
+        partialReason = "Research operation step limit reached";
+        break;
+      }
       const assessment = await invokeModel((options) =>
         deps.model.assessEvidence(
           input.question,
@@ -360,11 +377,17 @@ export async function runResearch(
         ),
       );
       await transition(
-        { type: "evidence.assessed", payload: { summary: assessment.summary } },
+        {
+          type: "evidence.assessed",
+          payload: {
+            sufficient: !forcePartial && assessment.sufficient,
+            summary: assessment.summary,
+            gaps: assessment.gaps,
+          },
+        },
         [{ type: "conclusion.updated", summary: assessment.summary }],
       );
-      evidenceSufficient = assessment.sufficient;
-      if (evidenceSufficient) break;
+      if (state.evidenceSufficient) break;
 
       const gapDescription = assessment.gaps.join("; ").trim();
       const uniqueFollowUps = assessment.followUpQueries.filter((query) => {
@@ -391,7 +414,7 @@ export async function runResearch(
     }
 
     if (!state.evidenceAssessed) {
-      if (!state.sourcesEvaluated) {
+      if (!state.sourcesEvaluated && hasBudget(4)) {
         const evaluations = await invokeModel((options) =>
           deps.model.evaluateSources(input.question, state.sources, options),
         );
@@ -403,22 +426,53 @@ export async function runResearch(
           })),
         );
       }
-      const assessment = await invokeModel((options) =>
-        deps.model.assessEvidence(
-          input.question,
-          state.sources,
-          state.evaluations,
-          options,
-        ),
-      );
-      await transition(
-        { type: "evidence.assessed", payload: { summary: assessment.summary } },
-        [{ type: "conclusion.updated", summary: assessment.summary }],
-      );
-      evidenceSufficient = searchRounds > 0 && assessment.sufficient;
+      if (!state.sourcesEvaluated) {
+        const summary = "Evidence assessment skipped to preserve report budget.";
+        await transition(
+          { type: "sources.evaluated", payload: { evaluations: [] } },
+          [],
+        );
+        await transition(
+          {
+            type: "evidence.assessed",
+            payload: { sufficient: false, summary, gaps: [summary] },
+          },
+          [{ type: "conclusion.updated", summary }],
+        );
+      } else if (hasBudget(4)) {
+        const assessment = await invokeModel((options) =>
+          deps.model.assessEvidence(
+            input.question,
+            state.sources,
+            state.evaluations,
+            options,
+          ),
+        );
+        const sufficient = searchRounds > 0 && !forcePartial && assessment.sufficient;
+        await transition(
+          {
+            type: "evidence.assessed",
+            payload: {
+              sufficient,
+              summary: assessment.summary,
+              gaps: assessment.gaps,
+            },
+          },
+          [{ type: "conclusion.updated", summary: assessment.summary }],
+        );
+      } else {
+        const summary = "Evidence assessment skipped to preserve report budget.";
+        await transition(
+          {
+            type: "evidence.assessed",
+            payload: { sufficient: false, summary, gaps: [summary] },
+          },
+          [{ type: "conclusion.updated", summary }],
+        );
+      }
     }
 
-    if (!evidenceSufficient) {
+    if (!state.evidenceSufficient) {
       if (searchRounds >= limits.maxSearchRounds) {
         partialReason = "Maximum search rounds reached";
       } else if (operationCount >= limits.maxSteps - 1) {
@@ -426,7 +480,7 @@ export async function runResearch(
       }
     }
 
-    const partial = !evidenceSufficient;
+    const partial = state.evidenceSufficient !== true;
     await transition(
       { type: "synthesis.started", payload: {} },
       [{ type: "report.started", partial }],

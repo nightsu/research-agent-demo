@@ -14,6 +14,8 @@ export interface ResearchState {
   sources: Source[];
   evaluations: SourceEvaluation[];
   evidenceAssessed: boolean;
+  evidenceSufficient?: boolean;
+  evidenceSummary?: string;
   sourcesEvaluated: boolean;
   activeQuery?: string;
   gaps: string[];
@@ -34,7 +36,10 @@ export type ResearchAction =
       type: "sources.evaluated";
       payload: { evaluations: SourceEvaluation[] };
     }
-  | { type: "evidence.assessed"; payload: { summary: string } }
+  | {
+      type: "evidence.assessed";
+      payload: { sufficient: boolean; summary: string; gaps: string[] };
+    }
   | { type: "gap.detected"; payload: { gap: string } }
   | { type: "synthesis.started"; payload: Record<string, never> }
   | { type: "report.completed"; payload: { report: ResearchReport } }
@@ -204,6 +209,8 @@ export function reduceResearchState(
         ...nextState,
         sources: mergeSources(state.sources, action.payload.sources),
         evidenceAssessed: false,
+        evidenceSufficient: undefined,
+        evidenceSummary: undefined,
         sourcesEvaluated: false,
         activeQuery: undefined,
       };
@@ -217,6 +224,8 @@ export function reduceResearchState(
       return {
         ...nextState,
         evidenceAssessed: false,
+        evidenceSufficient: undefined,
+        evidenceSummary: undefined,
         sources: state.sources.map((source) =>
           updates.get(canonicalizeUrl(source.url)) ?? source,
         ),
@@ -226,6 +235,8 @@ export function reduceResearchState(
       return {
         ...nextState,
         evidenceAssessed: false,
+        evidenceSufficient: undefined,
+        evidenceSummary: undefined,
         sourcesEvaluated: true,
         evaluations: mergeEvaluations(
           state.evaluations,
@@ -233,7 +244,13 @@ export function reduceResearchState(
         ),
       };
     case "evidence.assessed":
-      return { ...nextState, evidenceAssessed: true };
+      return {
+        ...nextState,
+        evidenceAssessed: true,
+        evidenceSufficient: action.payload.sufficient,
+        evidenceSummary: action.payload.summary,
+        gaps: [...new Set(action.payload.gaps)],
+      };
     case "gap.detected":
       return {
         ...nextState,

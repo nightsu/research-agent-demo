@@ -61,7 +61,11 @@ function model(overrides: Partial<ResearchModel> = {}): ResearchModel {
       gaps: [],
       followUpQueries: [],
     })),
-    generateReport: vi.fn(async (_question, sources) => reportFor(sources[0]!.id)),
+    generateReport: vi.fn(async (_question, sources) =>
+      sources[0]
+        ? reportFor(sources[0].id)
+        : { ...reportFor("unused"), findings: [] },
+    ),
     ...overrides,
   };
   const withoutCallHook = (options: Parameters<ResearchModel["generatePlan"]>[1]) =>
@@ -229,7 +233,7 @@ describe("runResearch", () => {
     const { deps, events } = harness({
       model: researchModel,
       searchWeb,
-      limits: { maxSteps: 6, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+      limits: { maxSteps: 7, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
     });
 
     const state = await runResearch(input, deps);
@@ -248,11 +252,48 @@ describe("runResearch", () => {
       .fn<ResearchDependencies["searchWeb"]>()
       .mockRejectedValueOnce(new TavilyError("temporary", { recoverable: true }))
       .mockResolvedValueOnce([source("source-1")]);
-    const { deps } = harness({ searchWeb, limits: { maxSteps: 7, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 } });
+    const { deps } = harness({ searchWeb, limits: { maxSteps: 9, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 } });
 
     await runResearch(input, deps);
 
     expect(searchWeb).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses at most one recoverable Tavily retry across all planned queries", async () => {
+    const searchWeb = vi
+      .fn<ResearchDependencies["searchWeb"]>()
+      .mockRejectedValueOnce(new TavilyError("first temporary", { recoverable: true }))
+      .mockResolvedValueOnce([source("source-1")])
+      .mockRejectedValueOnce(new TavilyError("second temporary", { recoverable: true }));
+    const researchModel = model({
+      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
+      assessEvidence: vi
+        .fn<ResearchModel["assessEvidence"]>()
+        .mockResolvedValueOnce({
+          sufficient: false,
+          summary: "The second planned query is required.",
+          gaps: [],
+          followUpQueries: [],
+        }),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      limits: { maxSteps: 20, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow("second temporary");
+
+    expect(searchWeb.mock.calls.map(([query]) => query)).toEqual([
+      "first query",
+      "first query",
+      "second query",
+    ]);
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "second temporary",
+      recoverable: true,
+    });
   });
 
   it("retries within an exact budget when extraction is disabled", async () => {
@@ -262,7 +303,7 @@ describe("runResearch", () => {
       .mockResolvedValueOnce([source("source-1")]);
     const { deps } = harness({
       searchWeb,
-      limits: { maxSteps: 6, maxSearchRounds: 1, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
+      limits: { maxSteps: 8, maxSearchRounds: 1, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
     });
 
     const state = await runResearch(input, deps);
@@ -443,8 +484,45 @@ describe("runResearch", () => {
 
     const state = await runResearch(input, deps);
 
-    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(deps.searchWeb).toHaveBeenCalledTimes(1);
+    expect(deps.extractSources).not.toHaveBeenCalled();
     expect(state.phase).toBe("partial");
+  });
+
+  it("reserves two report calls and returns partial under a tight repair budget", async () => {
+    const repairedReport = { ...reportFor("unused"), findings: [] };
+    const repairAwareModel: ResearchModel = {
+      generatePlan: vi.fn(async (_question, options) => {
+        options?.onModelCall?.();
+        return plan();
+      }),
+      evaluateSources: vi.fn(async (_question, sources, options) => {
+        options?.onModelCall?.();
+        options?.onModelCall?.();
+        return sources.map((item: Source) => evaluation(item.id));
+      }),
+      assessEvidence: vi.fn(async (_question, _sources, _evaluations, options) => {
+        options?.onModelCall?.();
+        options?.onModelCall?.();
+        return { sufficient: false, summary: "Budget-limited evidence.", gaps: [], followUpQueries: [] };
+      }),
+      generateReport: vi.fn(async (_question, _sources, _evaluations, partial, options) => {
+        expect(partial).toBe(true);
+        options?.onModelCall?.();
+        options?.onModelCall?.();
+        return repairedReport;
+      }),
+    };
+    const { deps, events } = harness({
+      model: repairAwareModel,
+      limits: { maxSteps: 6, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 6, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(state.phase).toBe("partial");
+    expect(events.at(-1)?.type).toBe("research.partial");
+    expect(repairAwareModel.generateReport).toHaveBeenCalledTimes(1);
   });
 
   it("cancels while an event delivery is pending", async () => {
