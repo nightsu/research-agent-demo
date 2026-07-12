@@ -350,13 +350,193 @@ describe("runResearch", () => {
 
     const state = await runResearch(input, deps);
 
-    expect(state.sources.map((item) => item.id)).toEqual(["one", "two"]);
+    expect(state.sources.map((item) => item.id)).toEqual([
+      "one",
+      "two",
+      "three",
+    ]);
     expect(extractSources).toHaveBeenCalledWith(
       ["https://example.com/one/", "https://example.com/two"],
       input.question,
       expect.any(AbortSignal),
     );
     expect(events.filter((event) => event.type === "source.read")).toHaveLength(1);
+  });
+
+  it("evaluates only sources that do not already have a current evaluation", async () => {
+    const evaluateSources = vi.fn<ResearchModel["evaluateSources"]>(
+      async (_question, sources) => sources.map((item) => evaluation(item.id)),
+    );
+    const researchModel = model({
+      evaluateSources,
+      assessEvidence: vi
+        .fn<ResearchModel["assessEvidence"]>()
+        .mockResolvedValueOnce({
+          sufficient: false,
+          summary: "A second source is required.",
+          gaps: ["Missing second source"],
+          followUpQueries: ["second query"],
+        })
+        .mockResolvedValueOnce({
+          sufficient: true,
+          summary: "Both sources are supported.",
+          gaps: [],
+          followUpQueries: [],
+        }),
+    });
+    const searchWeb = vi.fn(async (query: string) =>
+      query === "second query"
+        ? [
+            source("duplicate-first", "https://example.com/source-first/#again"),
+            source("source-second"),
+          ]
+        : [source("source-first")],
+    );
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      extractSources: vi.fn(async () => new Map()),
+      limits: {
+        maxSteps: 12,
+        maxSearchRounds: 2,
+        maxResultsPerRound: 6,
+        maxSourcesToRead: 0,
+        requestTimeoutMs: 30_000,
+      },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(
+      evaluateSources.mock.calls.map(([, sources]) =>
+        sources.map((item) => item.id),
+      ),
+    ).toEqual([["source-first"], ["source-second"]]);
+    expect(state.evaluations.map((item) => item.sourceId)).toEqual([
+      "source-first",
+      "source-second",
+    ]);
+    expect(
+      events
+        .filter((event) => event.type === "source.evaluated")
+        .map((event) => event.evaluation.sourceId),
+    ).toEqual(["source-first", "source-second"]);
+  });
+
+  it("skips reevaluation when a follow-up search adds no new source", async () => {
+    const evaluateSources = vi.fn<ResearchModel["evaluateSources"]>(
+      async (_question, sources) => sources.map((item) => evaluation(item.id)),
+    );
+    const assessEvidence = vi
+      .fn<ResearchModel["assessEvidence"]>()
+      .mockResolvedValueOnce({
+        sufficient: false,
+        summary: "Recheck the existing source.",
+        gaps: ["Follow-up required"],
+        followUpQueries: ["duplicate query"],
+      })
+      .mockResolvedValueOnce({
+        sufficient: true,
+        summary: "The retained evaluation is sufficient.",
+        gaps: [],
+        followUpQueries: [],
+      });
+    const researchModel = model({ evaluateSources, assessEvidence });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb: vi.fn(async (query: string) => [
+        query === "duplicate query"
+          ? source("duplicate", "https://example.com/source-1/#duplicate")
+          : source("source-1"),
+      ]),
+      extractSources: vi.fn(async () => new Map()),
+      limits: {
+        maxSteps: 12,
+        maxSearchRounds: 2,
+        maxResultsPerRound: 6,
+        maxSourcesToRead: 0,
+        requestTimeoutMs: 30_000,
+      },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(evaluateSources).toHaveBeenCalledTimes(1);
+    expect(
+      events.filter((event) => event.type === "source.evaluated"),
+    ).toHaveLength(1);
+    expect(
+      assessEvidence.mock.calls.map(([, sources, evaluations]) => ({
+        sourceIds: sources.map((item) => item.id),
+        evaluationIds: evaluations.map((item) => item.sourceId),
+      })),
+    ).toEqual([
+      { sourceIds: ["source-1"], evaluationIds: ["source-1"] },
+      { sourceIds: ["source-1"], evaluationIds: ["source-1"] },
+    ]);
+    expect(state.evaluations.map((item) => item.sourceId)).toEqual(["source-1"]);
+  });
+
+  it("deduplicates against existing sources before applying the round result cap", async () => {
+    const existing = source("existing", "https://example.com/existing");
+    const novel = source("novel", "https://example.com/novel");
+    const searchWeb = vi.fn(async (query: string) =>
+      query === "second query"
+        ? [
+            source("duplicate-existing", "https://example.com/existing/#copy"),
+            novel,
+          ]
+        : [existing],
+    );
+    const extractSources = vi.fn(async (urls: string[]) =>
+      new Map(urls.map((url) => [url, `Read ${url}`])),
+    );
+    const researchModel = model({
+      assessEvidence: vi
+        .fn<ResearchModel["assessEvidence"]>()
+        .mockResolvedValueOnce({
+          sufficient: false,
+          summary: "A novel source is required.",
+          gaps: ["Missing novel source"],
+          followUpQueries: ["second query"],
+        })
+        .mockResolvedValueOnce({
+          sufficient: true,
+          summary: "The novel source was retained.",
+          gaps: [],
+          followUpQueries: [],
+        }),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      extractSources,
+      limits: {
+        maxSteps: 12,
+        maxSearchRounds: 2,
+        maxResultsPerRound: 1,
+        maxSourcesToRead: 2,
+        requestTimeoutMs: 30_000,
+      },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(state.sources.map((item) => item.id)).toEqual(["existing", "novel"]);
+    expect(
+      events
+        .filter((event) => event.type === "search.completed")
+        .map((event) => event.sources.map((item) => item.id)),
+    ).toEqual([["existing"], ["novel"]]);
+    expect(extractSources.mock.calls.map(([urls]) => urls)).toEqual([
+      ["https://example.com/existing"],
+      ["https://example.com/novel"],
+    ]);
+    expect(
+      events
+        .filter((event) => event.type === "source.read")
+        .map((event) => event.sourceId),
+    ).toEqual(["existing", "novel"]);
   });
 
   it("fails and rejects when a report cites an unknown or rejected source", async () => {

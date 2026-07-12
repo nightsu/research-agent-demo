@@ -115,6 +115,7 @@ export interface ResearchFlowFixture {
   modelCalls: string[];
   modelOperationCalls: string[];
   modelSignals: AbortSignal[];
+  evaluatedSourceBatches: string[][];
   toolCalls: string[];
   searchCalls: SearchCall[];
   extractCalls: string[][];
@@ -128,10 +129,10 @@ export function createResearchFlowFixture(
   const modelCalls: string[] = [];
   const modelOperationCalls: string[] = [];
   const modelSignals: AbortSignal[] = [];
+  const evaluatedSourceBatches: string[][] = [];
   const toolCalls: string[] = [];
   const searchCalls: SearchCall[] = [];
   const extractCalls: string[][] = [];
-  const evaluatedSourceIds = new Set<string>();
   let assessmentRound = 0;
   let planReleased = !options.deferPlan;
   let releaseDeferredPlan: (() => void) | undefined;
@@ -162,11 +163,8 @@ export function createResearchFlowFixture(
     },
     async evaluateSources(_question, sources, modelOptions) {
       beginModelOperation("evaluateSources", modelOptions);
-      const freshSources = sources.filter(
-        (source) => !evaluatedSourceIds.has(source.id),
-      );
-      freshSources.forEach((source) => evaluatedSourceIds.add(source.id));
-      return freshSources.map((source): SourceEvaluation => {
+      evaluatedSourceBatches.push(sources.map((source) => source.id));
+      return sources.map((source): SourceEvaluation => {
         if (source.id === researchFlowRejectedSourceId) {
           return {
             sourceId: source.id,
@@ -245,6 +243,7 @@ export function createResearchFlowFixture(
     modelCalls,
     modelOperationCalls,
     modelSignals,
+    evaluatedSourceBatches,
     toolCalls,
     searchCalls,
     extractCalls,

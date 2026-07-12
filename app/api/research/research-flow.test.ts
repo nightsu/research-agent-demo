@@ -13,6 +13,7 @@ import {
   decodeEventLine,
   type ResearchEvent,
 } from "../../../lib/agent/research-events";
+import type { ResearchState } from "../../../lib/agent/research-state";
 import { createResearchRoute } from "./route";
 
 const terminalTypes = new Set<ResearchEvent["type"]>([
@@ -47,9 +48,13 @@ async function readRemainingEvents(
 
 async function executeFixture(options: { deferPlan?: boolean } = {}) {
   const fixture = createResearchFlowFixture(options);
+  let terminalState: ResearchState | undefined;
   const post = createResearchRoute({
     createModel: () => fixture.model,
-    runResearch,
+    runResearch: async (...args) => {
+      terminalState = await runResearch(...args);
+      return terminalState;
+    },
     searchWeb: fixture.searchWeb,
     extractSources: fixture.extractSources,
   });
@@ -64,7 +69,13 @@ async function executeFixture(options: { deferPlan?: boolean } = {}) {
   const first = await reader.read();
   if (first.done) throw new Error("Research stream closed before its first event");
 
-  return { fixture, response, reader, firstChunk: first.value };
+  return {
+    fixture,
+    response,
+    reader,
+    firstChunk: first.value,
+    getTerminalState: () => terminalState,
+  };
 }
 
 describe("POST /api/research complete workflow", () => {
@@ -142,6 +153,10 @@ describe("POST /api/research complete workflow", () => {
     expect(new Set(evaluations.map((item) => item.sourceId)).size).toBe(
       evaluations.length,
     );
+    expect(firstRun.fixture.evaluatedSourceBatches).toEqual([
+      [researchFlowAcceptedSourceIds[0], researchFlowRejectedSourceId],
+      [researchFlowAcceptedSourceIds[1]],
+    ]);
 
     if (completed?.type !== "report.completed") {
       throw new Error("Expected a completed report");
@@ -162,6 +177,17 @@ describe("POST /api/research complete workflow", () => {
     expect(
       completed.report.findings.flatMap((finding) => finding.sourceIds),
     ).not.toContain(researchFlowRejectedSourceId);
+    const terminalState = firstRun.getTerminalState();
+    expect(terminalState).toBeDefined();
+    const terminalSources = terminalState?.sources.map(
+      ({ rawContent, ...source }) => {
+        expect(rawContent).toBeTypeOf("string");
+        return source;
+      },
+    );
+    expect(terminalSources).toEqual(collectedSources);
+    expect(terminalState?.evaluations).toEqual(evaluations);
+    expect(terminalState?.report).toEqual(completed.report);
 
     expect(firstRun.fixture.modelCalls).toEqual([
       "generatePlan",

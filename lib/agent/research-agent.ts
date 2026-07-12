@@ -338,9 +338,9 @@ export async function runResearch(
         }
       }
 
-      const cappedSources = uniqueSources(
-        searchResults.slice(0, limits.maxResultsPerRound),
-        state.sources,
+      const cappedSources = uniqueSources(searchResults, state.sources).slice(
+        0,
+        limits.maxResultsPerRound,
       );
       await transition(
         {
@@ -398,9 +398,21 @@ export async function runResearch(
         partialReason = "Research operation step limit reached";
         break;
       }
-      const evaluations = await invokeModel((options) =>
-        deps.model.evaluateSources(input.question, state.sources, options),
+      const evaluatedSourceIds = new Set(
+        state.evaluations.map((evaluation) => evaluation.sourceId),
       );
+      const pendingEvaluationSources = state.sources.filter(
+        (source) => !evaluatedSourceIds.has(source.id),
+      );
+      const evaluations = pendingEvaluationSources.length > 0
+        ? await invokeModel((options) =>
+            deps.model.evaluateSources(
+              input.question,
+              pendingEvaluationSources,
+              options,
+            ),
+          )
+        : [];
       for (const item of evaluations) {
         await transition(
           { type: "sources.evaluated", payload: { evaluations: [item] } },
@@ -468,9 +480,21 @@ export async function runResearch(
 
     if (!state.evidenceAssessed) {
       if (!state.sourcesEvaluated && hasBudget(4)) {
-        const evaluations = await invokeModel((options) =>
-          deps.model.evaluateSources(input.question, state.sources, options),
+        const evaluatedSourceIds = new Set(
+          state.evaluations.map((evaluation) => evaluation.sourceId),
         );
+        const pendingEvaluationSources = state.sources.filter(
+          (source) => !evaluatedSourceIds.has(source.id),
+        );
+        const evaluations = pendingEvaluationSources.length > 0
+          ? await invokeModel((options) =>
+              deps.model.evaluateSources(
+                input.question,
+                pendingEvaluationSources,
+                options,
+              ),
+            )
+          : [];
         for (const item of evaluations) {
           await transition(
             { type: "sources.evaluated", payload: { evaluations: [item] } },
