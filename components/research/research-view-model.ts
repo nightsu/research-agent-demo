@@ -1,7 +1,6 @@
 import type { ResearchEvent } from "@/lib/agent/research-events";
 import { canonicalizeUrl } from "@/lib/agent/research-state";
 import type {
-  ResearchPhase,
   ResearchPlan,
   ResearchReport,
   Source,
@@ -16,6 +15,12 @@ export interface ResearchCounters {
   rejected: number;
 }
 
+export type WorkflowPhase =
+  | "planning"
+  | "searching"
+  | "evaluating"
+  | "synthesizing";
+
 export interface ResearchViewModel {
   sources: Source[];
   evaluations: Map<string, SourceEvaluation>;
@@ -24,25 +29,9 @@ export interface ResearchViewModel {
   counters: ResearchCounters;
   latestEvent?: ResearchEvent;
   latestEventLabel: string;
-  currentPhase: ResearchPhase;
+  currentPhase: WorkflowPhase;
   citationNumbers: Map<string, number>;
   sourceIdentityById: Map<string, string>;
-}
-
-type TerminalStatus = Extract<
-  ResearchRunStatus,
-  "completed" | "partial" | "cancelled" | "failed"
->;
-
-const terminalStatuses = new Set<ResearchRunStatus>([
-  "completed",
-  "partial",
-  "cancelled",
-  "failed",
-]);
-
-function isTerminalStatus(status: ResearchRunStatus): status is TerminalStatus {
-  return terminalStatuses.has(status);
 }
 
 export function eventStatusLabel(event?: ResearchEvent): string {
@@ -73,7 +62,7 @@ export const runStatusLabel: Record<ResearchRunStatus, string> = {
   failed: "Research failed",
 };
 
-function phaseForLatestEvent(event?: ResearchEvent): ResearchPhase {
+function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
   if (!event) return "planning";
   switch (event.type) {
     case "plan.started": return "planning";
@@ -85,10 +74,10 @@ function phaseForLatestEvent(event?: ResearchEvent): ResearchPhase {
     case "source.evaluated":
     case "conclusion.updated": return "evaluating";
     case "report.started": return "synthesizing";
-    case "report.completed": return "completed";
-    case "research.partial": return "partial";
-    case "research.cancelled": return "cancelled";
-    case "research.failed": return "failed";
+    case "report.completed":
+    case "research.partial":
+    case "research.cancelled":
+    case "research.failed": return undefined;
   }
 }
 
@@ -111,7 +100,6 @@ export function buildCitationNumbers(
 
 export function deriveResearchViewModel(
   events: ResearchEvent[],
-  status: ResearchRunStatus,
 ): ResearchViewModel {
   const sources: Source[] = [];
   const sourceByCanonicalUrl = new Map<string, Source>();
@@ -155,9 +143,10 @@ export function deriveResearchViewModel(
   }
 
   const latestEvent = events.at(-1);
-  const currentPhase = isTerminalStatus(status)
-    ? status
-    : phaseForLatestEvent(latestEvent);
+  const currentPhase = events
+    .toReversed()
+    .map(phaseForLatestEvent)
+    .find((phase): phase is WorkflowPhase => phase !== undefined) ?? "planning";
   const base = {
     sources,
     evaluations,

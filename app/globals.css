@@ -119,6 +119,8 @@ textarea::placeholder { color: #8a918e; }
 .phase-completed .phase-marker { border-color: var(--teal); background: var(--teal); }
 .phase-running .phase-marker { border-color: var(--blue); box-shadow: 0 0 0 5px rgba(49, 95, 132, 0.13); }
 .phase-running small { color: var(--blue); font-weight: 750; }
+.phase-cancelled .phase-marker, .phase-failed .phase-marker { border-color: var(--danger); }
+.phase-cancelled small, .phase-failed small { color: var(--danger); font-weight: 750; }
 .counter-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .counter-grid span { padding: 9px 5px; border-radius: 9px; background: var(--surface-muted); text-align: center; color: var(--ink-muted); font-size: 0.66rem; }
 .counter-grid strong { display: block; color: var(--ink); font-size: 1rem; }

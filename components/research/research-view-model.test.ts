@@ -45,7 +45,6 @@ describe("deriveResearchViewModel", () => {
   it("counts the latest accepted decisions across repeated search rounds", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), search([sourceA, sourceB]), evaluated("a", "accepted"), evaluated("b", "accepted")],
-      "running",
     );
 
     expect(view.counters).toEqual({ sources: 2, accepted: 2, rejected: 0 });
@@ -55,7 +54,6 @@ describe("deriveResearchViewModel", () => {
   it("replaces an earlier decision when the same source is re-evaluated", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), evaluated("a", "rejected")],
-      "running",
     );
 
     expect(view.counters).toEqual({ sources: 1, accepted: 0, rejected: 1 });
@@ -71,7 +69,6 @@ describe("deriveResearchViewModel", () => {
     };
     const view = deriveResearchViewModel(
       [search([sourceA]), search([duplicate]), evaluated("a-alias", "accepted")],
-      "running",
     );
 
     expect(view.sources.map((item) => item.id)).toEqual(["a"]);
@@ -82,7 +79,6 @@ describe("deriveResearchViewModel", () => {
   it("uses the latest workflow event so a follow-up search returns to searching", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), { type: "gap.detected", description: "Need more", followUpQueries: ["follow up"] }, { type: "search.started", query: "follow up", reason: "Close gap" }],
-      "running",
     );
 
     expect(view.currentPhase).toBe("searching");
@@ -90,8 +86,22 @@ describe("deriveResearchViewModel", () => {
     expect(view.latestEventLabel).toBe("Search running");
   });
 
-  it("lets a terminal run status override historical events", () => {
-    const view = deriveResearchViewModel([search([sourceA])], "failed");
-    expect(view.currentPhase).toBe("failed");
+  it("preserves the interrupted workflow phase for a terminal outcome", () => {
+    const view = deriveResearchViewModel(
+      [
+        { type: "plan.started", question: "A realistic research question" },
+        {
+          type: "plan.completed",
+          plan: {
+            objective: "Research the question",
+            subquestions: ["What happened?"],
+            searchQueries: ["evidence query"],
+          },
+        },
+        { type: "search.started", query: "evidence query", reason: "Find evidence" },
+        { type: "research.cancelled" },
+      ],
+    );
+    expect(view.currentPhase).toBe("searching");
   });
 });

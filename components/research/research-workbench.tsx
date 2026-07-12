@@ -18,8 +18,8 @@ export function ResearchWorkbench() {
   const { run, start, cancel, reset } = useResearchStream();
   const [selectedSource, setSelectedSource] = useState<string>();
   const view = useMemo(
-    () => deriveResearchViewModel(run.events, run.status),
-    [run.events, run.status],
+    () => deriveResearchViewModel(run.events),
+    [run.events],
   );
   const statusRef = useRef<HTMLParagraphElement>(null);
   const previousStatus = useRef<ResearchRunStatus>(run.status);
@@ -42,7 +42,13 @@ export function ResearchWorkbench() {
       const identity = view.sourceIdentityById.get(sourceId) ?? sourceId;
       setSelectedSource(identity);
       const target = document.getElementById(sourceDomId(identity));
-      target?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      const reducedMotion = window.matchMedia?.(
+        "(prefers-reduced-motion: reduce)",
+      ).matches ?? false;
+      target?.scrollIntoView?.({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "center",
+      });
       target?.focus({ preventScroll: true });
     },
     [view.sourceIdentityById],

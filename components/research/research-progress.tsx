@@ -9,8 +9,7 @@ export interface ResearchProgressProps {
 const phases = ["Planning", "Searching", "Evaluating", "Synthesizing"] as const;
 
 function phaseIndex(phase: ResearchViewModel["currentPhase"]): number {
-  if (phase === "completed" || phase === "partial") return 4;
-  return { planning: 0, searching: 1, evaluating: 2, synthesizing: 3, cancelled: 0, failed: 0 }[phase];
+  return { planning: 0, searching: 1, evaluating: 2, synthesizing: 3 }[phase];
 }
 
 export function ResearchProgress({ viewModel, status }: ResearchProgressProps) {
@@ -23,17 +22,29 @@ export function ResearchProgress({ viewModel, status }: ResearchProgressProps) {
       <h2>{runStatusLabel[status]}</h2>
       <ol className="phase-list">
         {phases.map((phase, index) => {
-          const phaseStatus =
-            index < activeIndex
-              ? "Completed"
-              : index === activeIndex && status === "running"
-                ? "Running"
-                : "Pending";
+          let phaseStatus: "Completed" | "Running" | "Pending" | "Cancelled" | "Failed";
+          if (status === "completed" || status === "partial" || index < activeIndex) {
+            phaseStatus = "Completed";
+          } else if (index === activeIndex && status === "running") {
+            phaseStatus = "Running";
+          } else if (index === activeIndex && status === "cancelled") {
+            phaseStatus = "Cancelled";
+          } else if (index === activeIndex && status === "failed") {
+            phaseStatus = "Failed";
+          } else {
+            phaseStatus = "Pending";
+          }
           return (
             <li
               key={phase}
               className={`phase phase-${phaseStatus.toLowerCase()}`}
-              aria-current={phaseStatus === "Running" ? "step" : undefined}
+              aria-current={
+                phaseStatus === "Running" ||
+                phaseStatus === "Cancelled" ||
+                phaseStatus === "Failed"
+                  ? "step"
+                  : undefined
+              }
             >
               <span className="phase-marker" aria-hidden="true" />
               <span>

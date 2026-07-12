@@ -99,7 +99,10 @@ beforeEach(() => {
   reset.mockReset();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("ResearchForm", () => {
   it("fills an example and submits a valid accessible request", () => {
@@ -149,7 +152,7 @@ describe("observable research views", () => {
   it("shows plan phases, counters, and status text without relying on color", () => {
     render(
       <ResearchProgress
-        viewModel={deriveResearchViewModel(completedEvents, "running")}
+        viewModel={deriveResearchViewModel(completedEvents)}
         status="running"
       />,
     );
@@ -179,7 +182,7 @@ describe("observable research views", () => {
     ];
     render(
       <ResearchProgress
-        viewModel={deriveResearchViewModel(loopEvents, "running")}
+        viewModel={deriveResearchViewModel(loopEvents)}
         status="running"
       />,
     );
@@ -188,6 +191,43 @@ describe("observable research views", () => {
       "aria-current",
       "step",
     );
+  });
+
+  it.each([
+    {
+      status: "cancelled" as const,
+      events: [
+        ...completedEvents.slice(0, 3),
+        { type: "research.cancelled" } as ResearchEvent,
+      ],
+      phase: "Searching",
+      outcome: "Cancelled",
+    },
+    {
+      status: "failed" as const,
+      events: [
+        ...completedEvents.slice(0, 6),
+        {
+          type: "research.failed",
+          message: "Research failed safely.",
+          recoverable: true,
+        } as ResearchEvent,
+      ],
+      phase: "Evaluating",
+      outcome: "Failed",
+    },
+  ])("shows the $status outcome on the interrupted $phase phase", ({ status, events, phase, outcome }) => {
+    render(
+      <ResearchProgress
+        viewModel={deriveResearchViewModel(events)}
+        status={status}
+      />,
+    );
+
+    const interrupted = screen.getByText(phase).closest("li");
+    expect(interrupted).toHaveTextContent(outcome);
+    expect(interrupted).toHaveAttribute("aria-current", "step");
+    expect(screen.getByText("Planning").closest("li")).toHaveTextContent("Completed");
   });
 
   it("renders chronological event details and keeps safe raw JSON closed", () => {
@@ -306,6 +346,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("focuses and scrolls the cited source on every citation click", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
     mockedRun = { status: "completed", events: completedEvents };
     render(<ResearchWorkbench />);
     const sourceCard = screen.getByRole("article", { name: source.title });
@@ -321,7 +362,31 @@ describe("ResearchWorkbench", () => {
     fireEvent.click(citation);
 
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView).toHaveBeenNthCalledWith(1, {
+      behavior: "smooth",
+      block: "center",
+    });
     expect(focus).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses instant citation scrolling when reduced motion is preferred", () => {
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
+    mockedRun = { status: "completed", events: completedEvents };
+    render(<ResearchWorkbench />);
+    const sourceCard = screen.getByRole("article", { name: source.title });
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(sourceCard, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /source 1/i }));
+
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      behavior: "auto",
+      block: "center",
+    });
+    expect(sourceCard).toHaveFocus();
   });
 });
 
