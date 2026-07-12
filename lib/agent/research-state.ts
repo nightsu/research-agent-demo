@@ -13,6 +13,9 @@ export interface ResearchState {
   plan?: ResearchPlan;
   sources: Source[];
   evaluations: SourceEvaluation[];
+  evidenceAssessed: boolean;
+  sourcesEvaluated: boolean;
+  activeQuery?: string;
   gaps: string[];
   report?: ResearchReport;
   error?: string;
@@ -26,10 +29,12 @@ export type ResearchAction =
       type: "search.completed";
       payload: { query: string; sources: Source[] };
     }
+  | { type: "sources.read"; payload: { sources: Source[] } }
   | {
       type: "sources.evaluated";
       payload: { evaluations: SourceEvaluation[] };
     }
+  | { type: "evidence.assessed"; payload: { summary: string } }
   | { type: "gap.detected"; payload: { gap: string } }
   | { type: "synthesis.started"; payload: Record<string, never> }
   | { type: "report.completed"; payload: { report: ResearchReport } }
@@ -44,7 +49,9 @@ const nextPhaseByAction = {
   "plan.completed": "searching",
   "search.started": "searching",
   "search.completed": "evaluating",
+  "sources.read": "evaluating",
   "sources.evaluated": "evaluating",
+  "evidence.assessed": "evaluating",
   "gap.detected": "searching",
   "synthesis.started": "synthesizing",
   "report.completed": "completed",
@@ -55,10 +62,17 @@ const nextPhaseByAction = {
 
 const legalActionsByPhase = {
   planning: ["plan.completed"],
-  searching: ["search.started", "search.completed"],
+  searching: [
+    "search.started",
+    "search.completed",
+    "sources.evaluated",
+    "synthesis.started",
+  ],
   evaluating: [
     "search.started",
     "sources.evaluated",
+    "sources.read",
+    "evidence.assessed",
     "gap.detected",
     "synthesis.started",
   ],
@@ -70,9 +84,11 @@ const legalActionsByPhase = {
 } as const satisfies Record<ResearchPhase, readonly ResearchAction["type"][]>;
 
 function isLegalTransition(
-  phase: ResearchPhase,
-  actionType: ResearchAction["type"],
+  state: ResearchState,
+  action: ResearchAction,
 ): boolean {
+  const { phase } = state;
+  const actionType = action.type;
   if (
     actionType === "research.cancelled" ||
     actionType === "research.failed"
@@ -85,9 +101,29 @@ function isLegalTransition(
     ].includes(phase);
   }
 
-  return (legalActionsByPhase[phase] as readonly ResearchAction["type"][]).includes(
+  const phaseAllows = (legalActionsByPhase[phase] as readonly ResearchAction["type"][]).includes(
     actionType,
   );
+  if (!phaseAllows) return false;
+
+  if (action.type === "search.started") {
+    return !state.activeQuery && (
+      state.phase === "searching" || state.evidenceAssessed
+    );
+  }
+  if (action.type === "search.completed") {
+    return state.activeQuery === action.payload.query;
+  }
+  if (action.type === "evidence.assessed") {
+    return !state.activeQuery && state.sourcesEvaluated;
+  }
+  if (action.type === "sources.read" || action.type === "sources.evaluated") {
+    return !state.evidenceAssessed;
+  }
+  if (action.type === "gap.detected" || action.type === "synthesis.started") {
+    return state.evidenceAssessed && !state.activeQuery;
+  }
+  return true;
 }
 
 export function createResearchState(question: string): ResearchState {
@@ -97,6 +133,8 @@ export function createResearchState(question: string): ResearchState {
     stepCount: 0,
     sources: [],
     evaluations: [],
+    evidenceAssessed: false,
+    sourcesEvaluated: false,
     gaps: [],
   };
 }
@@ -148,7 +186,7 @@ export function reduceResearchState(
   state: ResearchState,
   action: ResearchAction,
 ): ResearchState {
-  if (!isLegalTransition(state.phase, action.type)) {
+  if (!isLegalTransition(state, action)) {
     return state;
   }
 
@@ -165,15 +203,37 @@ export function reduceResearchState(
       return {
         ...nextState,
         sources: mergeSources(state.sources, action.payload.sources),
+        evidenceAssessed: false,
+        sourcesEvaluated: false,
+        activeQuery: undefined,
       };
+    case "sources.read": {
+      const updates = new Map(
+        action.payload.sources.map((source) => [
+          canonicalizeUrl(source.url),
+          source,
+        ]),
+      );
+      return {
+        ...nextState,
+        evidenceAssessed: false,
+        sources: state.sources.map((source) =>
+          updates.get(canonicalizeUrl(source.url)) ?? source,
+        ),
+      };
+    }
     case "sources.evaluated":
       return {
         ...nextState,
+        evidenceAssessed: false,
+        sourcesEvaluated: true,
         evaluations: mergeEvaluations(
           state.evaluations,
           action.payload.evaluations,
         ),
       };
+    case "evidence.assessed":
+      return { ...nextState, evidenceAssessed: true };
     case "gap.detected":
       return {
         ...nextState,
@@ -194,6 +254,7 @@ export function reduceResearchState(
     case "research.failed":
       return { ...nextState, error: action.payload.error };
     case "search.started":
+      return { ...nextState, activeQuery: action.payload.query };
     case "synthesis.started":
       return nextState;
   }

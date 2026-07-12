@@ -91,19 +91,34 @@ describe("research workflow state", () => {
       ...createResearchState("Compare Kimi and DeepSeek agents"),
       phase: "searching" as const,
     };
-    const afterFirstSearch = reduceResearchState(initial, {
+    const firstStarted = reduceResearchState(initial, {
+      type: "search.started",
+      payload: { query: "agent documentation" },
+    });
+    const afterFirstSearch = reduceResearchState(firstStarted, {
       type: "search.completed",
       payload: {
         query: "agent documentation",
         sources: [source("source-1", "https://example.com/docs/")],
       },
     });
-    const afterGap = reduceResearchState(afterFirstSearch, {
+    const evaluated = reduceResearchState(afterFirstSearch, {
+      type: "sources.evaluated",
+      payload: { evaluations: [] },
+    });
+    const assessed = reduceResearchState(evaluated, {
+      type: "evidence.assessed",
+      payload: { summary: "More evidence is required." },
+    });
+    const afterGap = reduceResearchState(assessed, {
       type: "gap.detected",
       payload: { gap: "Find another agent documentation source." },
     });
-
-    const afterSecondSearch = reduceResearchState(afterGap, {
+    const secondStarted = reduceResearchState(afterGap, {
+      type: "search.started",
+      payload: { query: "agent docs" },
+    });
+    const afterSecondSearch = reduceResearchState(secondStarted, {
       type: "search.completed",
       payload: {
         query: "agent docs",
@@ -114,7 +129,7 @@ describe("research workflow state", () => {
     expect(afterSecondSearch.sources).toEqual([
       source("source-1", "https://example.com/docs/"),
     ]);
-    expect(afterSecondSearch.stepCount).toBe(3);
+    expect(afterSecondSearch.stepCount).toBe(7);
   });
 
   it("runs the next planned search after evaluating the prior query", () => {
@@ -137,8 +152,12 @@ describe("research workflow state", () => {
       type: "sources.evaluated",
       payload: { evaluations: [] },
     });
+    const assessed = reduceResearchState(evaluated, {
+      type: "evidence.assessed",
+      payload: { summary: "The second planned query is still needed." },
+    });
 
-    const secondSearchStarted = reduceResearchState(evaluated, {
+    const secondSearchStarted = reduceResearchState(assessed, {
       type: "search.started",
       payload: { query: "DeepSeek agent documentation" },
     });
@@ -151,9 +170,9 @@ describe("research workflow state", () => {
     });
 
     expect(secondSearchStarted.phase).toBe("searching");
-    expect(secondSearchStarted.stepCount).toBe(5);
+    expect(secondSearchStarted.stepCount).toBe(6);
     expect(secondSearchCompleted.phase).toBe("evaluating");
-    expect(secondSearchCompleted.stepCount).toBe(6);
+    expect(secondSearchCompleted.stepCount).toBe(7);
     expect(secondSearchCompleted.sources).toHaveLength(2);
   });
 
@@ -190,6 +209,27 @@ describe("research workflow state", () => {
     expect(reevaluated.stepCount).toBe(2);
   });
 
+  it("merges extracted content into an existing source without adding a new source", () => {
+    const existing = source("source-1", "https://example.com/docs/");
+    const initial = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+      sources: [existing],
+    };
+
+    const next = reduceResearchState(initial, {
+      type: "sources.read",
+      payload: {
+        sources: [{ ...existing, url: "https://example.com/docs", rawContent: "Full text" }],
+      },
+    });
+
+    expect(next.sources).toEqual([
+      { ...existing, url: "https://example.com/docs", rawContent: "Full text" },
+    ]);
+    expect(next.phase).toBe("evaluating");
+  });
+
   it.each(terminalCases)("moves $action.type to the $phase terminal phase", ({
     action,
     phase,
@@ -219,6 +259,61 @@ describe("research workflow state", () => {
     });
 
     expect(next).toBe(initial);
+  });
+
+  it("rejects skipped search and assessment boundaries", () => {
+    const planned = reduceResearchState(
+      createResearchState("Compare Kimi and DeepSeek agents"),
+      { type: "plan.completed", payload: plan },
+    );
+    const skippedStart = reduceResearchState(planned, {
+      type: "search.completed",
+      payload: { query: "agent docs", sources: [] },
+    });
+    const started = reduceResearchState(planned, {
+      type: "search.started",
+      payload: { query: "agent docs" },
+    });
+    const duplicateStart = reduceResearchState(started, {
+      type: "search.started",
+      payload: { query: "other docs" },
+    });
+    const completed = reduceResearchState(started, {
+      type: "search.completed",
+      payload: { query: "agent docs", sources: [] },
+    });
+    const skippedAssessment = reduceResearchState(completed, {
+      type: "synthesis.started",
+      payload: {},
+    });
+
+    expect(skippedStart).toBe(planned);
+    expect(duplicateStart).toBe(started);
+    expect(skippedAssessment).toBe(completed);
+  });
+
+  it("rejects evidence mutations after assessment until another search", () => {
+    const assessed = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+      sources: [source("source-1", "https://example.com/docs")],
+      sourcesEvaluated: true,
+      evidenceAssessed: true,
+    };
+
+    const lateRead = reduceResearchState(assessed, {
+      type: "sources.read",
+      payload: {
+        sources: [{ ...assessed.sources[0], rawContent: "Late content" }],
+      },
+    });
+    const lateEvaluation = reduceResearchState(assessed, {
+      type: "sources.evaluated",
+      payload: { evaluations: [] },
+    });
+
+    expect(lateRead).toBe(assessed);
+    expect(lateEvaluation).toBe(assessed);
   });
 
   it.each(["completed", "partial", "cancelled", "failed"] as const)(

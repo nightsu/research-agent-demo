@@ -48,6 +48,7 @@ export interface ResearchModel {
 
 export interface ResearchModelOptions {
   abortSignal?: AbortSignal;
+  onModelCall?: () => void;
 }
 
 export class MissingStructuredOutputError extends Error {
@@ -165,6 +166,7 @@ async function generateValidated<T>(
   const model = getResearchModel();
 
   const attempt = async (attemptPrompt: string): Promise<T> => {
+    options.onModelCall?.();
     const result = await generateText({
       model,
       system: RESEARCH_SYSTEM_PROMPT,

@@ -385,12 +385,14 @@ describe("structured research model", () => {
   it("passes the same abort signal to the initial and repair generations", async () => {
     const controller = new AbortController();
     controller.abort();
+    const onModelCall = vi.fn();
     generateText
       .mockResolvedValueOnce({ output: undefined })
       .mockResolvedValueOnce({ output: plan });
 
     await createResearchModel().generatePlan(question, {
       abortSignal: controller.signal,
+      onModelCall,
     });
 
     expect(generateText).toHaveBeenCalledTimes(2);
@@ -398,6 +400,7 @@ describe("structured research model", () => {
     expect(generateText.mock.calls[1][0].abortSignal).toBe(controller.signal);
     expect(generateText.mock.calls[0][0].system).toBe(RESEARCH_SYSTEM_PROMPT);
     expect(generateText.mock.calls[1][0].system).toBe(RESEARCH_SYSTEM_PROMPT);
+    expect(onModelCall).toHaveBeenCalledTimes(2);
   });
 
   it("keeps stage prompts focused on observable, source-backed decisions", () => {

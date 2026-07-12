@@ -1,0 +1,517 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { researchEventSchema, type ResearchEvent } from "./research-events";
+import type {
+  EvidenceAssessment,
+  ResearchInput,
+  ResearchPlan,
+  ResearchReport,
+  Source,
+  SourceEvaluation,
+} from "./research-types";
+import type { ResearchModel } from "../providers/research-model";
+import { TavilyError } from "../tools/tavily";
+import { runResearch, type ResearchDependencies } from "./research-agent";
+
+const input: ResearchInput = {
+  question: "How do bounded research agents work?",
+  timeRange: "year",
+  depth: "quick",
+};
+
+const source = (id: string, url = `https://example.com/${id}`): Source => ({
+  id,
+  title: `Source ${id}`,
+  url,
+  domain: "example.com",
+  snippet: `Snippet for ${id}`,
+});
+
+const evaluation = (sourceId: string): SourceEvaluation => ({
+  sourceId,
+  decision: "accepted",
+  relevance: 5,
+  authority: 4,
+  freshness: 4,
+  reason: "Direct and credible evidence.",
+});
+
+const reportFor = (sourceId: string): ResearchReport => ({
+  title: "Bounded research agents",
+  executiveSummary: "They make explicit, bounded decisions.",
+  findings: [{ claim: "The loop is bounded.", sourceIds: [sourceId], confidence: "high" }],
+  trends: [],
+  disagreements: [],
+  limitations: [],
+});
+
+const plan = (queries = ["bounded research agent"]): ResearchPlan => ({
+  objective: "Explain bounded research agents",
+  subquestions: ["How is the workflow bounded?"],
+  searchQueries: queries,
+});
+
+function model(overrides: Partial<ResearchModel> = {}): ResearchModel {
+  const implementation: ResearchModel = {
+    generatePlan: vi.fn(async () => plan()),
+    evaluateSources: vi.fn(async (_question, sources) => sources.map((item: Source) => evaluation(item.id))),
+    assessEvidence: vi.fn(async (): Promise<EvidenceAssessment> => ({
+      sufficient: true,
+      summary: "Enough evidence is available.",
+      gaps: [],
+      followUpQueries: [],
+    })),
+    generateReport: vi.fn(async (_question, sources) => reportFor(sources[0]!.id)),
+    ...overrides,
+  };
+  const withoutCallHook = (options: Parameters<ResearchModel["generatePlan"]>[1]) =>
+    options ? { ...options, onModelCall: undefined } : options;
+
+  return {
+    generatePlan: vi.fn((question, options) => {
+      options?.onModelCall?.();
+      return implementation.generatePlan(question, withoutCallHook(options));
+    }),
+    evaluateSources: vi.fn((question, sources, options) => {
+      options?.onModelCall?.();
+      return implementation.evaluateSources(question, sources, withoutCallHook(options));
+    }),
+    assessEvidence: vi.fn((question, sources, evaluations, options) => {
+      options?.onModelCall?.();
+      return implementation.assessEvidence(
+        question,
+        sources,
+        evaluations,
+        withoutCallHook(options),
+      );
+    }),
+    generateReport: vi.fn((question, sources, evaluations, partial, options) => {
+      options?.onModelCall?.();
+      return implementation.generateReport(
+        question,
+        sources,
+        evaluations,
+        partial,
+        withoutCallHook(options),
+      );
+    }),
+  };
+}
+
+function harness(overrides: Partial<ResearchDependencies> = {}) {
+  const events: ResearchEvent[] = [];
+  const deps: ResearchDependencies = {
+    model: model(),
+    searchWeb: vi.fn(async () => [source("source-1")]),
+    extractSources: vi.fn(async (urls) => new Map([[urls[0]!, "Extracted content"]])),
+    emit: vi.fn(async (event) => {
+      events.push(researchEventSchema.parse(event));
+    }),
+    ...overrides,
+  };
+  return { deps, events };
+}
+
+describe("runResearch", () => {
+  it("emits the explicit happy-path checkpoints and completes with a report", async () => {
+    const { deps, events } = harness();
+
+    const state = await runResearch(input, deps);
+
+    expect(events.map((event) => event.type)).toEqual([
+      "plan.started",
+      "plan.completed",
+      "search.started",
+      "search.completed",
+      "source.read",
+      "source.evaluated",
+      "conclusion.updated",
+      "report.started",
+      "report.completed",
+    ]);
+    expect(state).toMatchObject({ phase: "completed", report: reportFor("source-1") });
+    expect(state.sources[0]?.rawContent).toBe("Extracted content");
+  });
+
+  it("queues one unique gap follow-up and avoids duplicate planned queries", async () => {
+    const assessEvidence = vi
+      .fn<ResearchModel["assessEvidence"]>()
+      .mockResolvedValueOnce({
+        sufficient: false,
+        summary: "A comparison is missing.",
+        gaps: ["Missing comparison"],
+        followUpQueries: ["follow up", "planned query", "follow up"],
+      })
+      .mockResolvedValueOnce({
+        sufficient: true,
+        summary: "The comparison is now supported.",
+        gaps: [],
+        followUpQueries: [],
+      });
+    const researchModel = model({
+      generatePlan: vi.fn(async () => plan(["planned query", "planned query"])),
+      assessEvidence,
+    });
+    const searchWeb = vi.fn(async (query: string) => [source(`source-${query.replaceAll(" ", "-")}`)]);
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      limits: { maxSteps: 12, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+    });
+
+    await runResearch(input, deps);
+
+    expect(searchWeb.mock.calls.map(([query]) => query)).toEqual(["planned query", "follow up"]);
+    expect(events.filter((event) => event.type === "gap.detected")).toHaveLength(1);
+  });
+
+  it("continues the queued plan when assessment has no follow-up queries", async () => {
+    const researchModel = model({
+      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
+      assessEvidence: vi
+        .fn<ResearchModel["assessEvidence"]>()
+        .mockResolvedValueOnce({
+          sufficient: false,
+          summary: "More planned evidence is needed.",
+          gaps: [],
+          followUpQueries: [],
+        })
+        .mockResolvedValueOnce({ sufficient: true, summary: "Enough.", gaps: [], followUpQueries: [] }),
+    });
+    const searchWeb = vi.fn(async (query: string) => [source(`source-${query[0]}`)]);
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      limits: { maxSteps: 12, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(searchWeb.mock.calls.map(([query]) => query)).toEqual(["first query", "second query"]);
+    expect(events.some((event) => event.type === "gap.detected")).toBe(false);
+    expect(state.phase).toBe("completed");
+  });
+
+  it("stops at bounded rounds and emits a deterministic partial report", async () => {
+    const researchModel = model({
+      assessEvidence: vi.fn(async () => ({
+        sufficient: false,
+        summary: "Still incomplete.",
+        gaps: ["Need more evidence"],
+        followUpQueries: ["another query"],
+      })),
+    });
+    const searchWeb = vi.fn(async (query: string) => [source(`source-${query[0]}`)]);
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      limits: { maxSteps: 12, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(searchWeb).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual({ type: "report.started", partial: true });
+    expect(events.at(-1)?.type).toBe("research.partial");
+    expect(state).toMatchObject({ phase: "partial", report: expect.any(Object) });
+  });
+
+  it("reserves the final operation step for a partial report", async () => {
+    const researchModel = model({
+      assessEvidence: vi.fn(async () => ({
+        sufficient: false,
+        summary: "Still incomplete.",
+        gaps: ["Need more evidence"],
+        followUpQueries: ["next query"],
+      })),
+    });
+    const searchWeb = vi.fn(async () => [source("source-1")]);
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb,
+      limits: { maxSteps: 6, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(searchWeb).toHaveBeenCalledTimes(1);
+    expect(researchModel.generateReport).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({
+      type: "research.partial",
+      reason: "Research operation step limit reached",
+    });
+    expect(state.phase).toBe("partial");
+  });
+
+  it("retries search exactly once only for a recoverable TavilyError", async () => {
+    const searchWeb = vi
+      .fn<ResearchDependencies["searchWeb"]>()
+      .mockRejectedValueOnce(new TavilyError("temporary", { recoverable: true }))
+      .mockResolvedValueOnce([source("source-1")]);
+    const { deps } = harness({ searchWeb, limits: { maxSteps: 7, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 } });
+
+    await runResearch(input, deps);
+
+    expect(searchWeb).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries within an exact budget when extraction is disabled", async () => {
+    const searchWeb = vi
+      .fn<ResearchDependencies["searchWeb"]>()
+      .mockRejectedValueOnce(new TavilyError("temporary", { recoverable: true }))
+      .mockResolvedValueOnce([source("source-1")]);
+    const { deps } = harness({
+      searchWeb,
+      limits: { maxSteps: 6, maxSearchRounds: 1, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(searchWeb).toHaveBeenCalledTimes(2);
+    expect(deps.extractSources).not.toHaveBeenCalled();
+    expect(state.phase).toBe("completed");
+  });
+
+  it.each([
+    new TavilyError("bad request", { recoverable: false }),
+    new DOMException("Aborted", "AbortError"),
+  ])("does not retry a non-recoverable or abort error", async (error) => {
+    const searchWeb = vi.fn(async () => { throw error; });
+    const { deps } = harness({ searchWeb });
+
+    await expect(runResearch(input, deps)).rejects.toBe(error);
+    expect(searchWeb).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates sources, caps round results and reads, and skips missing extraction output", async () => {
+    const results = [
+      source("one", "https://example.com/one/"),
+      source("duplicate", "https://example.com/one"),
+      source("two"),
+      source("three"),
+    ];
+    const extractSources = vi.fn(async (urls: string[]) => new Map([[urls[0]!, "Readable"]]));
+    const researchModel = model({
+      evaluateSources: vi.fn(async (_question, sources) => sources.map((item: Source) => evaluation(item.id))),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb: vi.fn(async () => results),
+      extractSources,
+      limits: { maxSteps: 8, maxSearchRounds: 1, maxResultsPerRound: 3, maxSourcesToRead: 2, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(state.sources.map((item) => item.id)).toEqual(["one", "two"]);
+    expect(extractSources).toHaveBeenCalledWith(
+      ["https://example.com/one/", "https://example.com/two"],
+      input.question,
+      expect.any(AbortSignal),
+    );
+    expect(events.filter((event) => event.type === "source.read")).toHaveLength(1);
+  });
+
+  it("fails and rejects when a report cites an unknown or rejected source", async () => {
+    const researchModel = model({
+      generateReport: vi.fn(async () => reportFor("unknown-source")),
+    });
+    const { deps, events } = harness({ model: researchModel });
+
+    await expect(runResearch(input, deps)).rejects.toThrow(/accepted source/i);
+
+    expect(events.at(-1)).toMatchObject({ type: "research.failed", recoverable: false });
+    expect(events.some((event) => event.type === "report.completed")).toBe(false);
+  });
+
+  it("marks exhausted recoverable Tavily failures as recoverable", async () => {
+    const searchWeb = vi.fn(async () => {
+      throw new TavilyError("temporary", { recoverable: true });
+    });
+    const { deps, events } = harness({ searchWeb });
+
+    await expect(runResearch(input, deps)).rejects.toThrow("temporary");
+
+    expect(searchWeb).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toEqual({ type: "research.failed", message: "temporary", recoverable: true });
+  });
+
+  it("emits a nonempty fallback message and preserves an empty-message error", async () => {
+    const error = new Error();
+    const researchModel = model({ generatePlan: vi.fn(async () => { throw error; }) });
+    const { deps, events } = harness({ model: researchModel });
+
+    await expect(runResearch(input, deps)).rejects.toBe(error);
+
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "Research failed",
+      recoverable: false,
+    });
+  });
+
+  it("emits failure if terminal event delivery rejects", async () => {
+    const emitterError = new Error("stream closed");
+    const events: ResearchEvent[] = [];
+    const emit = vi.fn(async (event: ResearchEvent) => {
+      if (event.type === "report.completed") throw emitterError;
+      events.push(researchEventSchema.parse(event));
+    });
+    const { deps } = harness({ emit });
+
+    await expect(runResearch(input, deps)).rejects.toBe(emitterError);
+
+    expect(events.at(-1)).toEqual({
+      type: "research.failed",
+      message: "stream closed",
+      recoverable: false,
+    });
+  });
+
+  it("returns cancelled before calls and during a call without throwing", async () => {
+    const before = new AbortController();
+    before.abort("user stopped");
+    const beforeHarness = harness();
+
+    const beforeState = await runResearch(input, beforeHarness.deps, before.signal);
+
+    expect(beforeState.phase).toBe("cancelled");
+    expect(beforeHarness.deps.model.generatePlan).not.toHaveBeenCalled();
+    expect(beforeHarness.events).toEqual([{ type: "research.cancelled" }]);
+
+    const during = new AbortController();
+    const searchWeb = vi.fn((_query, _options, signal) => new Promise<Source[]>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const duringHarness = harness({ searchWeb });
+    const pending = runResearch(input, duringHarness.deps, during.signal);
+    await vi.waitFor(() => expect(searchWeb).toHaveBeenCalled());
+    during.abort(new DOMException("user stopped", "AbortError"));
+
+    const duringState = await pending;
+
+    expect(duringState.phase).toBe("cancelled");
+    expect(duringHarness.events.at(-1)?.type).toBe("research.cancelled");
+  });
+
+  it("passes abort signals to every dependency call", async () => {
+    const seenSignals: AbortSignal[] = [];
+    const researchModel = model({
+      generatePlan: vi.fn(async (_question, options) => { seenSignals.push(options!.abortSignal!); return plan(); }),
+      evaluateSources: vi.fn(async (_question, sources, options) => { seenSignals.push(options!.abortSignal!); return sources.map((item: Source) => evaluation(item.id)); }),
+      assessEvidence: vi.fn(async (_question, _sources, _evaluations, options) => { seenSignals.push(options!.abortSignal!); return { sufficient: true, summary: "Enough.", gaps: [], followUpQueries: [] }; }),
+      generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => { seenSignals.push(options!.abortSignal!); return reportFor(sources[0]!.id); }),
+    });
+    const searchWeb = vi.fn(async (_query, _options, signal) => { seenSignals.push(signal!); return [source("source-1")]; });
+    const extractSources = vi.fn(async (urls, _question, signal) => { seenSignals.push(signal!); return new Map([[urls[0]!, "content"]]); });
+    const { deps } = harness({ model: researchModel, searchWeb, extractSources });
+
+    await runResearch(input, deps);
+
+    expect(seenSignals).toHaveLength(6);
+    expect(seenSignals.every((signal) => signal instanceof AbortSignal)).toBe(true);
+  });
+
+  it("counts a model repair callback as another operation step", async () => {
+    const emptyReport: ResearchReport = {
+      ...reportFor("unused"),
+      findings: [],
+    };
+    const repairAwareModel: ResearchModel = {
+      generatePlan: vi.fn(async (_question, options) => {
+        options?.onModelCall?.();
+        options?.onModelCall?.();
+        return plan();
+      }),
+      evaluateSources: vi.fn(async (_question, sources, options) => {
+        options?.onModelCall?.();
+        return sources.map((item: Source) => evaluation(item.id));
+      }),
+      assessEvidence: vi.fn(async (_question, _sources, _evaluations, options) => {
+        options?.onModelCall?.();
+        return { sufficient: true, summary: "Enough.", gaps: [], followUpQueries: [] };
+      }),
+      generateReport: vi.fn(async (_question, _sources, _evaluations, _partial, options) => {
+        options?.onModelCall?.();
+        return emptyReport;
+      }),
+    };
+    const { deps } = harness({
+      model: repairAwareModel,
+      limits: { maxSteps: 5, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
+    });
+
+    const state = await runResearch(input, deps);
+
+    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(state.phase).toBe("partial");
+  });
+
+  it("cancels while an event delivery is pending", async () => {
+    const controller = new AbortController();
+    const events: ResearchEvent[] = [];
+    const emit = vi.fn((event: ResearchEvent) => {
+      if (event.type === "search.started") return new Promise<void>(() => {});
+      events.push(researchEventSchema.parse(event));
+    });
+    const { deps } = harness({ emit });
+    const pending = runResearch(input, deps, controller.signal);
+    await vi.waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "search.started" })),
+    );
+
+    controller.abort(new DOMException("user stopped", "AbortError"));
+    const state = await pending;
+
+    expect(state.phase).toBe("cancelled");
+    expect(events.at(-1)?.type).toBe("research.cancelled");
+  });
+
+  it("aborts a timed-out request and classifies the failure as recoverable", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const researchModel = model({
+      generatePlan: vi.fn((_question, options) => {
+        receivedSignal = options?.abortSignal;
+        return new Promise<ResearchPlan>((_resolve, reject) => {
+          options?.abortSignal?.addEventListener(
+            "abort",
+            () => reject(options.abortSignal?.reason),
+            { once: true },
+          );
+        });
+      }),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      limits: { maxSteps: 8, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 6, requestTimeoutMs: 5 },
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow(/timed out/i);
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(events.at(-1)).toMatchObject({ type: "research.failed", recoverable: true });
+  });
+
+  it("rejects invalid input before making external calls and emits failure", async () => {
+    const { deps, events } = harness();
+
+    await expect(runResearch({ ...input, question: "short" }, deps)).rejects.toThrow();
+
+    expect(deps.model.generatePlan).not.toHaveBeenCalled();
+    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "research.failed", recoverable: false });
+  });
+
+  it("emits failure for a missing runtime input before external calls", async () => {
+    const { deps, events } = harness();
+
+    await expect(
+      runResearch(undefined as unknown as ResearchInput, deps),
+    ).rejects.toThrow();
+
+    expect(deps.model.generatePlan).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "research.failed", recoverable: false });
+  });
+});
