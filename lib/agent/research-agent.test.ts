@@ -122,7 +122,7 @@ describe("runResearch", () => {
 
     const state = await runResearch(input, deps);
 
-    expect(events.map((event) => event.type)).toEqual([
+    expect(events.filter((event) => event.type !== "progress.updated").map((event) => event.type)).toEqual([
       "plan.started",
       "plan.completed",
       "search.started",
@@ -173,6 +173,39 @@ describe("runResearch", () => {
         followUpQueries: ["follow up"],
       },
     ]);
+  });
+
+  it("emits actual operation and search-round metrics throughout a two-round flow", async () => {
+    const researchModel = model({
+      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
+      assessEvidence: vi
+        .fn<ResearchModel["assessEvidence"]>()
+        .mockResolvedValueOnce({ sufficient: false, summary: "More needed.", gaps: [], followUpQueries: [] })
+        .mockResolvedValueOnce({ sufficient: true, summary: "Enough.", gaps: [], followUpQueries: [] }),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb: vi.fn(async (query: string) => [source(`source-${query[0]}`)]),
+      limits: { maxSteps: 12, maxSearchRounds: 3, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+    });
+
+    await runResearch(input, deps);
+
+    const metrics = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "progress.updated" }> =>
+        event.type === "progress.updated",
+    );
+    expect(metrics.some((event) => event.searchRounds === 1)).toBe(true);
+    expect(metrics.some((event) => event.searchRounds === 2)).toBe(true);
+    expect(metrics.at(-1)).toEqual({
+      type: "progress.updated",
+      operationCount: 10,
+      operationLimit: 12,
+      searchRounds: 2,
+      searchRoundLimit: 3,
+    });
+    const terminalIndex = events.findIndex((event) => event.type === "report.completed");
+    expect(events[terminalIndex - 1]).toEqual(metrics.at(-1));
   });
 
   it("continues the queued plan when assessment has no follow-up queries", async () => {
@@ -810,7 +843,7 @@ describe("runResearch", () => {
         return emptyReport;
       }),
     };
-    const { deps } = harness({
+    const { deps, events } = harness({
       model: repairAwareModel,
       limits: { maxSteps: 5, maxSearchRounds: 2, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
     });
@@ -820,6 +853,11 @@ describe("runResearch", () => {
     expect(deps.searchWeb).toHaveBeenCalledTimes(1);
     expect(deps.extractSources).not.toHaveBeenCalled();
     expect(state.phase).toBe("partial");
+    const planMetrics = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "progress.updated" }> =>
+        event.type === "progress.updated" && event.searchRounds === 0,
+    );
+    expect(planMetrics.slice(0, 2).map((event) => event.operationCount)).toEqual([1, 2]);
   });
 
   it("reserves two report calls and returns partial under a tight repair budget", async () => {

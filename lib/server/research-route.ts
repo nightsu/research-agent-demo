@@ -111,6 +111,9 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
         };
 
         const waitForCapacity = async (): Promise<void> => {
+          if (!writable || closed || workflowController.signal.aborted) {
+            throw closedReason();
+          }
           if ((controller.desiredSize ?? 0) > 0) return;
           if (capacityWaiter !== null) {
             throw new Error("Concurrent research event delivery is not supported");

@@ -23,6 +23,12 @@ function eventPresentation(event: ResearchEvent): {
   switch (event.type) {
     case "plan.started":
       return { label: "Planning · Running", title: "Research started", detail: event.question };
+    case "progress.updated":
+      return {
+        label: "Workflow · Progress",
+        title: `Agent operations ${event.operationCount}/${event.operationLimit}`,
+        detail: `Search rounds ${event.searchRounds}/${event.searchRoundLimit}`,
+      };
     case "plan.completed":
       return {
         label: "Planning · Completed",

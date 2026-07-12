@@ -138,13 +138,13 @@ sequenceDiagram
 
 `ResearchState` 是服务端编排的最小权威快照：当前 phase、活动 query、累积来源、评估、证据结论、缺口与最终报告。`reduceResearchState()` 拒绝非法迁移，因此模型输出、route handler 和 UI 都不能自行发明状态。
 
-`ResearchEvent` 是面向传输和教学 UI 的追加日志：它保留搜索开始原因、provider 返回数量、逐来源读取 / 评估以及结论更新。状态不需要保存全部搜索历史，事件也不暴露所有内部字段。两者通过 `transition(action, events)` 在同一编排点关联，但有不同目的：
+`ResearchEvent` 是面向传输和教学 UI 的追加日志：它保留搜索开始原因、provider 返回数量、逐来源读取 / 评估、结论更新以及 `progress.updated` 的真实 operation / search round 指标。状态不需要保存全部搜索历史或 telemetry，事件也不暴露所有内部字段。两者通过 `transition(action, events)` 在同一编排点关联，但有不同目的：
 
 - state 用于决定下一步并维护不变量；
 - event 用于观察、回放和派生 UI；
 - 二者都不包含 provider 私有 chain-of-thought。
 
-客户端的 `deriveResearchViewModel()` 不是第二个业务状态机。它只把事件投影为展示所需的来源去重、评估映射、计数和引用序号。
+客户端的 `deriveResearchViewModel()` 不是第二个业务状态机。它只把事件投影为展示所需的来源去重、评估映射、计数、最后一条 metrics 和引用序号。
 
 ## 操作预算与修复回调
 
@@ -153,6 +153,7 @@ sequenceDiagram
 - 每次 `invoke()` 在调用模型、Search 或 Extract 前计数；
 - `invokeModel()` 把 `onModelCall` 传到 provider；一次正常结构化生成占 1 个 operation；
 - `generateValidated()` 只在缺少 / 无效结构化输出时允许一次 repair generation；第二次 `onModelCall()` 会再占 1 个 operation；
+- 每次 tool operation 完成（成功或失败）、每次 provider call（包括 repair）以及 search round 增加后都会发 `progress.updated`；模型 / 工具原始失败不会被 telemetry 发送失败覆盖；
 - 鉴权、限流、传输与取消错误不会触发结构化修复；
 - 编排在中间阶段用 `hasBudget()` 预留后续评估、证据判断和最终报告空间。预算不足会停止扩展搜索并尽量生成标明限制的 partial report。
 
@@ -162,7 +163,7 @@ sequenceDiagram
 
 `ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModel()` 只负责按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model。
 
-上层不读取供应商原始响应；所有输出先经 AI SDK `Output.object` 和领域 Zod schema，再进入状态。这样切换 provider 不改变工作流、事件和 UI 协议。当前每个阶段是独立调用；若未来采用连续 DeepSeek thinking + tool-call loop，必须在 provider / message adapter 内保留协议要求的 `reasoning_content`，同时继续禁止把它写入 observable events。
+上层不读取供应商原始响应；所有输出先经 AI SDK `Output.object` 和带字符串 / 列表上限的领域 Zod schema，再进入状态。plan、evaluation、evidence、report 分别使用显式 `maxOutputTokens`，initial 与 repair 共享同一阶段上限。事件编码还会拒绝超过 UTF-8 1 MiB 的单条记录。这样切换 provider 不改变工作流、事件和 UI 协议。当前每个阶段是独立调用；若未来采用连续 DeepSeek thinking + tool-call loop，必须在 provider / message adapter 内保留协议要求的 `reasoning_content`，同时继续禁止把它写入 observable events。
 
 ## 来源信任与引用完整性
 
@@ -180,7 +181,9 @@ sequenceDiagram
 
 客户端每次 start 都取消前一请求并使用 generation ID 忽略过期事件；显式 cancel 会终止 fetch。`lib/server/research-route.ts` 中由 `createResearchRoute()` 创建的 handler 把 `request.signal` 传播到 workflow controller，`runResearch` 再为每个模型 / Tavily operation 创建有超时的子 signal。ReadableStream consumer 主动取消时，handler 的 `cancel()` 同样中止 workflow controller。
 
-该 handler 在当前进程内的 `emit()` 遇到 `ReadableStream.desiredSize <= 0` 时等待 `pull()`，所以 runtime 能让慢 consumer 暂停下一事件，而不是无限入队。请求或 consumer 取消信号到达 handler 时，会拒绝等待者并中止 workflow。反向代理、平台缓冲和 serverless 生命周期可能改变实际 streaming、断开传播与执行时限；目标部署必须单独验证 streaming、disconnect propagation 和 `maxDuration`。
+该 handler 在当前进程内的 `emit()` 遇到 `ReadableStream.desiredSize <= 0` 时等待 `pull()`，所以 runtime 能让慢 consumer 暂停下一事件，而不是无限入队。请求或 consumer 取消信号到达 handler 时，会拒绝等待者并中止 workflow；后续 `research.cancelled` 可以因客户端已断开而跳过，不会再创建 capacity waiter。反向代理、平台缓冲和 serverless 生命周期可能改变实际 streaming、断开传播与执行时限；目标部署必须单独验证 streaming、disconnect propagation 和 `maxDuration`。
+
+当前 Demo 没有网关鉴权、用户级 rate limit、并发限制或付费 quota。对公网暴露模型与 Tavily 付费 API 前，必须先在可信网关补齐这些生产控制。真实供应商 live smoke 仍未验证。
 
 终态只能是 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一。`createResearchRoute()` handler 记录首次终态并拒绝后续 emit；若依赖意外结束却没发终态，`ensureTerminal()` 尝试补一个安全的 `research.failed`。客户端同样拒绝终态后的记录和没有终态就结束的流。薄包装 `app/api/research/route.ts` 不复制这些规则。
 

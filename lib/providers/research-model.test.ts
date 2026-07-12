@@ -173,6 +173,12 @@ describe("structured research model", () => {
     expect(request.model).toBe(selectedModel);
     expect(request.system).toBe(RESEARCH_SYSTEM_PROMPT);
     expect(request.output).toEqual({ kind: "object", schema: actualSchema });
+    expect(request.maxOutputTokens).toBe({
+      generatePlan: 2_500,
+      evaluateSources: 6_000,
+      assessEvidence: 2_500,
+      generateReport: 12_000,
+    }[method]);
     for (const fragment of promptFragments) {
       expect(request.prompt).toContain(fragment);
     }
@@ -199,6 +205,8 @@ describe("structured research model", () => {
 
     expect(result).toEqual(plan);
     expect(generateText).toHaveBeenCalledTimes(2);
+    expect(generateText.mock.calls[0][0].maxOutputTokens).toBe(2_500);
+    expect(generateText.mock.calls[1][0].maxOutputTokens).toBe(2_500);
     expect(generateText.mock.calls[1][0].prompt).toContain(
       "Repair instruction: the previous generation failed validation",
     );

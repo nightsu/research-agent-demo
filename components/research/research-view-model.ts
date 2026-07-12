@@ -15,6 +15,11 @@ export interface ResearchCounters {
   rejected: number;
 }
 
+export type ResearchMetrics = Omit<
+  Extract<ResearchEvent, { type: "progress.updated" }>,
+  "type"
+>;
+
 export type WorkflowPhase =
   | "planning"
   | "searching"
@@ -32,12 +37,14 @@ export interface ResearchViewModel {
   currentPhase: WorkflowPhase;
   citationNumbers: Map<string, number>;
   sourceIdentityById: Map<string, string>;
+  metrics?: ResearchMetrics;
 }
 
 export function eventStatusLabel(event?: ResearchEvent): string {
   if (!event) return "Waiting for first event";
   switch (event.type) {
     case "plan.started": return "Planning started";
+    case "progress.updated": return "Workflow progress updated";
     case "plan.completed": return "Plan completed";
     case "search.started": return "Search running";
     case "search.completed": return "Search completed";
@@ -66,6 +73,7 @@ function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
   if (!event) return "planning";
   switch (event.type) {
     case "plan.started": return "planning";
+    case "progress.updated": return undefined;
     case "plan.completed":
     case "search.started":
     case "gap.detected": return "searching";
@@ -106,9 +114,14 @@ export function deriveResearchViewModel(
   const sourceIdentityById = new Map<string, string>();
   let report: ResearchReport | undefined;
   let plan: ResearchPlan | undefined;
+  let metrics: ResearchMetrics | undefined;
 
   for (const event of events) {
     if (event.type === "plan.completed") plan = event.plan;
+    if (event.type === "progress.updated") {
+      const { operationCount, operationLimit, searchRounds, searchRoundLimit } = event;
+      metrics = { operationCount, operationLimit, searchRounds, searchRoundLimit };
+    }
     if (event.type !== "search.completed") continue;
     for (const source of event.sources) {
       const canonicalUrl = canonicalizeUrl(source.url);
@@ -162,5 +175,6 @@ export function deriveResearchViewModel(
     ...(latestEvent ? { latestEvent } : {}),
     ...(report ? { report } : {}),
     ...(plan ? { plan } : {}),
+    ...(metrics ? { metrics } : {}),
   };
 }

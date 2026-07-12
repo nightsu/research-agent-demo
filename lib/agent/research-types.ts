@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export const RESEARCH_TEXT_LIMITS = {
+  id: 200,
+  title: 500,
+  short: 2_000,
+  content: 200_000,
+  listItems: 50,
+  findings: 30,
+} as const;
+
 export const researchPhaseSchema = z.enum([
   "planning",
   "searching",
@@ -18,12 +27,12 @@ export const researchInputSchema = z.object({
 });
 
 export const researchPlanSchema = z.object({
-  objective: z.string().min(1),
-  subquestions: z.array(z.string().min(1)).min(1).max(6),
-  searchQueries: z.array(z.string().min(1)).min(1).max(6),
+  objective: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
+  subquestions: z.array(z.string().min(1).max(RESEARCH_TEXT_LIMITS.short)).min(1).max(6),
+  searchQueries: z.array(z.string().min(1).max(RESEARCH_TEXT_LIMITS.short)).min(1).max(6),
 });
 
-export const httpUrlSchema = z.string().refine(
+export const httpUrlSchema = z.string().max(4_000).refine(
   (value) => {
     try {
       const protocol = new URL(value).protocol;
@@ -36,45 +45,45 @@ export const httpUrlSchema = z.string().refine(
 );
 
 export const sourceSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
+  id: z.string().min(1).max(RESEARCH_TEXT_LIMITS.id),
+  title: z.string().min(1).max(RESEARCH_TEXT_LIMITS.title),
   url: httpUrlSchema,
-  domain: z.string().min(1),
-  snippet: z.string(),
-  rawContent: z.string().optional(),
-  publishedAt: z.string().optional(),
+  domain: z.string().min(1).max(RESEARCH_TEXT_LIMITS.title),
+  snippet: z.string().max(RESEARCH_TEXT_LIMITS.short),
+  rawContent: z.string().max(RESEARCH_TEXT_LIMITS.content).optional(),
+  publishedAt: z.string().max(RESEARCH_TEXT_LIMITS.id).optional(),
   score: z.number().min(0).max(1).optional(),
 });
 
 export const sourceEvaluationSchema = z.object({
-  sourceId: z.string().trim().min(1),
+  sourceId: z.string().trim().min(1).max(RESEARCH_TEXT_LIMITS.id),
   decision: z.enum(["accepted", "rejected"]),
   relevance: z.number().min(0).max(5),
   authority: z.number().min(0).max(5),
   freshness: z.number().min(0).max(5),
-  reason: z.string().min(1),
+  reason: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
 });
 
 export const evidenceAssessmentSchema = z.object({
   sufficient: z.boolean(),
-  summary: z.string().min(1),
-  gaps: z.array(z.string()),
-  followUpQueries: z.array(z.string()).max(3),
+  summary: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
+  gaps: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(RESEARCH_TEXT_LIMITS.listItems),
+  followUpQueries: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(3),
 });
 
 export const reportSchema = z.object({
-  title: z.string(),
-  executiveSummary: z.string(),
+  title: z.string().max(RESEARCH_TEXT_LIMITS.title),
+  executiveSummary: z.string().max(RESEARCH_TEXT_LIMITS.content),
   findings: z.array(
     z.object({
-      claim: z.string(),
-      sourceIds: z.array(z.string()).min(1),
+      claim: z.string().max(RESEARCH_TEXT_LIMITS.content),
+      sourceIds: z.array(z.string().max(RESEARCH_TEXT_LIMITS.id)).min(1).max(RESEARCH_TEXT_LIMITS.listItems),
       confidence: z.enum(["high", "medium", "low"]),
     }),
-  ),
-  trends: z.array(z.string()),
-  disagreements: z.array(z.string()),
-  limitations: z.array(z.string()),
+  ).max(RESEARCH_TEXT_LIMITS.findings),
+  trends: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(RESEARCH_TEXT_LIMITS.listItems),
+  disagreements: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(RESEARCH_TEXT_LIMITS.listItems),
+  limitations: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(RESEARCH_TEXT_LIMITS.listItems),
 });
 
 export type ResearchPhase = z.infer<typeof researchPhaseSchema>;

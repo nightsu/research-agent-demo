@@ -42,6 +42,7 @@ const evaluation = {
 
 const validEvents: ResearchEvent[] = [
   { type: "plan.started", question: "How do Kimi agents work?" },
+  { type: "progress.updated", operationCount: 1, operationLimit: 12, searchRounds: 0, searchRoundLimit: 3 },
   {
     type: "plan.completed",
     plan: {
@@ -106,8 +107,35 @@ describe("research event protocol", () => {
     ).toThrow();
   });
 
+  it("rejects invalid workflow progress metrics", () => {
+    expect(() => researchEventSchema.parse({
+      type: "progress.updated",
+      operationCount: -1,
+      operationLimit: 0,
+      searchRounds: 1.5,
+      searchRoundLimit: -1,
+    })).toThrow();
+  });
+
+  it("rejects an encoded event larger than the UTF-8 transport limit", () => {
+    const oversized = {
+      type: "search.completed",
+      query: "oversized event",
+      sources: Array.from({ length: 6 }, (_, index) => ({
+        ...source,
+        id: `source-${index}`,
+        url: `https://example.com/${index}`,
+        rawContent: "研".repeat(200_000),
+      })),
+      resultCount: 6,
+    } as ResearchEvent;
+
+    expect(() => encodeEvent(oversized)).toThrow(/event.*size/i);
+  });
+
   it.each([
     ["plan.started", { type: "plan.started", question: 42 }],
+    ["progress.updated", { type: "progress.updated", operationCount: 0, operationLimit: 1, searchRounds: 0 }],
     ["plan.completed", { type: "plan.completed", plan: { objective: "", subquestions: [], searchQueries: [] } }],
     ["search.started", { type: "search.started", query: "", reason: "docs" }],
     ["search.completed", { type: "search.completed", query: "Kimi", sources: [source], resultCount: -1 }],

@@ -6,9 +6,11 @@ import {
   researchPlanSchema,
   sourceEvaluationSchema,
   sourceSchema,
+  RESEARCH_TEXT_LIMITS,
 } from "./research-types";
 
-const nonemptyStringSchema = z.string().trim().min(1);
+const nonemptyStringSchema = z.string().trim().min(1).max(RESEARCH_TEXT_LIMITS.short);
+export const MAX_ENCODED_EVENT_BYTES = 1_048_576;
 
 // Observable events expose decisions and tool evidence for the learning UI.
 // They intentionally never transport provider-private chain-of-thought fields.
@@ -16,6 +18,13 @@ export const researchEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("plan.started"),
     question: nonemptyStringSchema,
+  }),
+  z.strictObject({
+    type: z.literal("progress.updated"),
+    operationCount: z.number().int().nonnegative(),
+    operationLimit: z.number().int().positive(),
+    searchRounds: z.number().int().nonnegative(),
+    searchRoundLimit: z.number().int().nonnegative(),
   }),
   z.strictObject({
     type: z.literal("plan.completed"),
@@ -29,7 +38,7 @@ export const researchEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("search.completed"),
     query: nonemptyStringSchema,
-    sources: sourceSchema.array(),
+    sources: sourceSchema.array().max(RESEARCH_TEXT_LIMITS.listItems),
     // Provider-returned count before any downstream source filtering.
     resultCount: z.number().int().nonnegative(),
   }),
@@ -77,7 +86,11 @@ export const researchEventSchema = z.discriminatedUnion("type", [
 export type ResearchEvent = z.infer<typeof researchEventSchema>;
 
 export function encodeEvent(event: ResearchEvent): string {
-  return `${JSON.stringify(researchEventSchema.parse(event))}\n`;
+  const encoded = `${JSON.stringify(researchEventSchema.parse(event))}\n`;
+  if (new TextEncoder().encode(encoded).byteLength > MAX_ENCODED_EVENT_BYTES) {
+    throw new Error(`Research event exceeds maximum encoded event size of ${MAX_ENCODED_EVENT_BYTES} bytes`);
+  }
+  return encoded;
 }
 
 export function decodeEventLine(line: string): ResearchEvent {

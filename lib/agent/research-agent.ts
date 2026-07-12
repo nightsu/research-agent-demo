@@ -174,6 +174,15 @@ export async function runResearch(
   const limits = parsedLimits.data;
   eventTimeoutMs = limits.requestTimeoutMs;
   let operationCount = 0;
+  let searchRounds = 0;
+  const progressEvent = (count = operationCount): ResearchEvent => ({
+    type: "progress.updated",
+    operationCount: count,
+    operationLimit: limits.maxSteps,
+    searchRounds,
+    searchRoundLimit: limits.maxSearchRounds,
+  });
+  const emitProgress = (count = operationCount) => emit(progressEvent(count));
   const hasBudget = (operations: number) =>
     operationCount + operations <= limits.maxSteps;
   const hasAcceptedKnownEvidence = () => {
@@ -187,6 +196,7 @@ export async function runResearch(
 
   const invoke = async <T>(
     operation: (abortSignal: AbortSignal) => Promise<T>,
+    emitOperationProgress = true,
   ): Promise<T> => {
     if (operationCount >= limits.maxSteps) throw new OperationBudgetError();
     operationCount += 1;
@@ -215,9 +225,11 @@ export async function runResearch(
       }
     });
 
+    let operationFailure: unknown;
     try {
       return await Promise.race([operation(controller.signal), operationAborted]);
     } catch (error) {
+      operationFailure = error;
       if (signal?.aborted) throw signal.reason ?? error;
       if (
         controller.signal.aborted &&
@@ -230,6 +242,13 @@ export async function runResearch(
       clearTimeout(timer);
       removeOperationAbortListener();
       signal?.removeEventListener("abort", onParentAbort);
+      if (emitOperationProgress) {
+        try {
+          await emitProgress();
+        } catch (telemetryError) {
+          if (operationFailure === undefined) throw telemetryError;
+        }
+      }
     }
   };
 
@@ -240,31 +259,51 @@ export async function runResearch(
     }) => Promise<T>,
   ): Promise<T> => {
     let firstProviderCall = true;
-    return invoke((abortSignal) =>
-      operation({
+    let telemetry = Promise.resolve();
+    let operationFailure: unknown;
+    try {
+      return await invoke((abortSignal) =>
+        operation({
         abortSignal,
         onModelCall: () => {
           if (firstProviderCall) {
             firstProviderCall = false;
-            return;
+          } else {
+            if (operationCount >= limits.maxSteps) throw new OperationBudgetError();
+            operationCount += 1;
           }
-          if (operationCount >= limits.maxSteps) throw new OperationBudgetError();
-          operationCount += 1;
+          const capturedCount = operationCount;
+          telemetry = telemetry.then(() => emitProgress(capturedCount));
         },
       }),
-    );
+      false);
+    } catch (error) {
+      operationFailure = error;
+      throw error;
+    } finally {
+      try {
+        await telemetry;
+      } catch (telemetryError) {
+        if (operationFailure === undefined) throw telemetryError;
+      }
+    }
   };
 
   const cancel = async (): Promise<ResearchState> => {
-    await transition(
-      {
-        type: "research.cancelled",
-        payload: {
-          reason: signal?.reason ? "Research cancelled by caller." : undefined,
-        },
+    const action: ResearchAction = {
+      type: "research.cancelled",
+      payload: {
+        reason: signal?.reason ? "Research cancelled by caller." : undefined,
       },
-      [{ type: "research.cancelled" }],
-    );
+    };
+    const next = reduceResearchState(state, action);
+    if (next === state) return state;
+    try {
+      await emit({ type: "research.cancelled" });
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+    }
+    state = next;
     return state;
   };
 
@@ -291,7 +330,6 @@ export async function runResearch(
     }
 
     const attemptedReadUrls = new Set<string>();
-    let searchRounds = 0;
     let recoverableSearchRetryUsed = false;
     let forcePartial = false;
     let partialReason = "No additional search queries were available";
@@ -308,6 +346,7 @@ export async function runResearch(
 
       const nextQuery = pendingQueries.shift()!;
       searchRounds += 1;
+      await emitProgress();
       const reason = nextQuery.reason === "Evidence gap follow-up"
         ? nextQuery.reason
         : `Research plan query ${searchRounds}`;

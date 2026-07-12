@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { ResearchReport, Source } from "@/lib/agent/research-types";
+import { canonicalizeUrl } from "@/lib/agent/research-state";
 import { buildCitationNumbers } from "./research-view-model";
 
 export interface ResearchReportViewProps {
@@ -12,6 +13,10 @@ export interface ResearchReportViewProps {
 }
 
 export function ResearchReportView({ report, sources, citationNumbers = buildCitationNumbers(sources), onCitation }: ResearchReportViewProps) {
+  const sourceUrlByCanonicalUrl = new Map(
+    sources.map((source) => [canonicalizeUrl(source.url), source.url]),
+  );
+  const markdownComponents = createMarkdownComponents(sourceUrlByCanonicalUrl);
 
   return (
     <article className="research-report" aria-labelledby="report-title">
@@ -55,27 +60,39 @@ export function ResearchReportView({ report, sources, citationNumbers = buildCit
           ))}
         </div>
       </section>
-      <ReportList title="Trends" items={report.trends} />
-      <ReportList title="Disagreements" items={report.disagreements} />
-      <ReportList title="Limitations" items={report.limitations} />
+      <ReportList title="Trends" items={report.trends} components={markdownComponents} />
+      <ReportList title="Disagreements" items={report.disagreements} components={markdownComponents} />
+      <ReportList title="Limitations" items={report.limitations} components={markdownComponents} />
     </article>
   );
 }
 
-function ReportList({ title, items }: { title: string; items: string[] }) {
+function ReportList({ title, items, components }: { title: string; items: string[]; components: ReturnType<typeof createMarkdownComponents> }) {
   if (items.length === 0) return null;
   return (
     <section>
       <h3>{title}</h3>
-      <ul>{items.map((item) => <li key={item}><ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{item}</ReactMarkdown></li>)}</ul>
+      <ul>{items.map((item) => <li key={item}><ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{item}</ReactMarkdown></li>)}</ul>
     </section>
   );
 }
 
-const markdownComponents = {
-  a: ({ href, children }: React.ComponentPropsWithoutRef<"a">) => (
-    <a href={href} target="_blank" rel="noopener noreferrer">
-      {children}<span className="visually-hidden"> (opens in a new tab)</span>
-    </a>
-  ),
-};
+function createMarkdownComponents(sourceUrlByCanonicalUrl: ReadonlyMap<string, string>) {
+  return {
+    a: ({ href, children }: React.ComponentPropsWithoutRef<"a">) => {
+      let allowedHref: string | undefined;
+      try {
+        if (href) allowedHref = sourceUrlByCanonicalUrl.get(canonicalizeUrl(href));
+      } catch {
+        // Invalid and non-HTTP model-generated links are deliberately inert.
+      }
+      return allowedHref ? (
+        <a href={allowedHref} target="_blank" rel="noopener noreferrer">
+          {children}<span className="visually-hidden"> (opens in a new tab)</span>
+        </a>
+      ) : (
+        <span>{children}<span className="visually-hidden"> (link unavailable: not a collected source)</span></span>
+      );
+    },
+  };
+}

@@ -75,6 +75,7 @@ const completedEvents: ResearchEvent[] = [
     followUpQueries: ["browser rendering independent analysis"],
   },
   { type: "conclusion.updated", summary: "Evidence is converging." },
+  { type: "progress.updated", operationCount: 7, operationLimit: 12, searchRounds: 2, searchRoundLimit: 3 },
   { type: "report.started", partial: false },
   { type: "report.completed", report },
 ];
@@ -164,6 +165,8 @@ describe("observable research views", () => {
     expect(screen.getByText((_, element) => element?.textContent === "1 accepted")).toBeInTheDocument();
     expect(screen.getByText((_, element) => element?.textContent === "0 rejected")).toBeInTheDocument();
     expect(screen.getByText((_, element) => element?.textContent === "1 source")).toBeInTheDocument();
+    expect(screen.getByText("Search rounds 2/3")).toBeInTheDocument();
+    expect(screen.getByText("Agent operations 7/12")).toBeInTheDocument();
   });
 
   it("marks searching current when a follow-up search starts after evaluation", () => {
@@ -265,6 +268,32 @@ describe("observable research views", () => {
     expect(onCitation).toHaveBeenCalledWith("source-1");
     expect(screen.queryByRole("button", { name: /missing/i })).not.toBeInTheDocument();
     expect(screen.getByText(/citation unavailable/i)).toBeInTheDocument();
+  });
+
+  it("only makes collected source URLs clickable in model markdown", () => {
+    const linkedReport: ResearchReport = {
+      ...report,
+      executiveSummary: [
+        `[Known source](${source.url}#details)`,
+        "[Unknown source](https://attacker.example/phish)",
+        "[Script](javascript:alert(1))",
+      ].join(" "),
+    };
+    render(
+      <ResearchReportView
+        report={linkedReport}
+        sources={[source]}
+        onCitation={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: /known source.*new tab/i })).toHaveAttribute(
+      "href",
+      source.url,
+    );
+    expect(screen.queryByRole("link", { name: /unknown source/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /script/i })).not.toBeInTheDocument();
+    expect(screen.getAllByText(/link unavailable: not a collected source/i)).toHaveLength(2);
   });
 });
 

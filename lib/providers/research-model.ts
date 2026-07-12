@@ -58,6 +58,8 @@ export class MissingStructuredOutputError extends Error {
   }
 }
 
+const sourceEvaluationsSchema = sourceEvaluationSchema.array().max(50);
+
 function isRepairableStructuredOutputError(error: unknown): boolean {
   return (
     error instanceof MissingStructuredOutputError ||
@@ -71,7 +73,7 @@ export function validateSourceEvaluations(
   evaluations: SourceEvaluation[],
 ): SourceEvaluation[] {
   const expectedSourceIds = new Set(sources.map((source) => source.id));
-  const integritySchema = sourceEvaluationSchema.array().superRefine(
+  const integritySchema = sourceEvaluationsSchema.superRefine(
     (items, context) => {
       const counts = new Map<string, number>();
 
@@ -160,6 +162,7 @@ function selectAcceptedEvidence(
 async function generateValidated<T>(
   schema: ZodType<T>,
   prompt: string,
+  maxOutputTokens: number,
   options: ResearchModelOptions = {},
   validate: (output: T) => T = (output) => output,
 ): Promise<T> {
@@ -173,6 +176,7 @@ async function generateValidated<T>(
       prompt: attemptPrompt,
       output: Output.object({ schema }),
       abortSignal: options.abortSignal,
+      maxOutputTokens,
     });
 
     if (result.output == null) {
@@ -214,13 +218,15 @@ export function createResearchModel(): ResearchModel {
       return generateValidated(
         researchPlanSchema,
         planPrompt(question),
+        2_500,
         options,
       );
     },
     evaluateSources(question, sources, options) {
       return generateValidated(
-        sourceEvaluationSchema.array(),
+        sourceEvaluationsSchema,
         sourceEvaluationPrompt(question, sources),
+        6_000,
         options,
         (output) => validateSourceEvaluations(sources, output),
       );
@@ -231,6 +237,7 @@ export function createResearchModel(): ResearchModel {
       return generateValidated(
         evidenceAssessmentSchema,
         evidencePrompt(question, accepted.sources, accepted.evaluations),
+        2_500,
         options,
       );
     },
@@ -245,6 +252,7 @@ export function createResearchModel(): ResearchModel {
           accepted.evaluations,
           partial,
         ),
+        12_000,
         options,
         (output) => validateReportCitations(sources, evaluations, output),
       );

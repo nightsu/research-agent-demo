@@ -439,7 +439,33 @@ describe("POST /api/research", () => {
     expect(workflowSignal.reason).toBe("consumer left");
   });
 
-  it("allows only one cancelled terminal event after request abort", async () => {
+  it("does not backpressure a late cancellation event after an unread request disconnect", async () => {
+    let firstDelivered!: () => void;
+    const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
+    let cancellationSettled = false;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies, signal) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        firstDelivered();
+        await new Promise<void>((resolve) =>
+          signal!.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        await Promise.resolve(dependencies.emit({ type: "research.cancelled" })).catch(() => undefined);
+        cancellationSettled = true;
+        return emptyState(input);
+      },
+    );
+    const requestController = new AbortController();
+    const { post } = harness(run);
+    await post(jsonRequest({ question }, requestController.signal));
+
+    await delivered;
+    requestController.abort("client disconnected");
+    await vi.waitFor(() => expect(cancellationSettled).toBe(true), { timeout: 200 });
+    await run.mock.results[0].value;
+  });
+
+  it("rejects all late events after request abort, including an optional cancellation terminal", async () => {
     let workflowStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       workflowStarted = resolve;
@@ -483,10 +509,9 @@ describe("POST /api/research", () => {
     const events = await readEvents(response);
 
     expect(nonCancellationRejected).toBe(true);
-    expect(afterTerminalRejected).toBe(true);
+    expect(afterTerminalRejected).toBe(false);
     expect(events).toEqual([
       { type: "plan.started", question },
-      { type: "research.cancelled" },
     ]);
   });
 

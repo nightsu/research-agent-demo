@@ -104,4 +104,19 @@ describe("deriveResearchViewModel", () => {
     );
     expect(view.currentPhase).toBe("searching");
   });
+
+  it("exposes the latest workflow metrics independently of later events", () => {
+    const metrics = {
+      operationCount: 8,
+      operationLimit: 12,
+      searchRounds: 2,
+      searchRoundLimit: 3,
+    };
+    const view = deriveResearchViewModel([
+      { type: "progress.updated", ...metrics },
+      { type: "research.cancelled" },
+    ]);
+
+    expect(view.metrics).toEqual(metrics);
+  });
 });

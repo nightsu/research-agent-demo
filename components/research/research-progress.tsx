@@ -14,7 +14,7 @@ function phaseIndex(phase: ResearchViewModel["currentPhase"]): number {
 
 export function ResearchProgress({ viewModel, status }: ResearchProgressProps) {
   const activeIndex = phaseIndex(viewModel.currentPhase);
-  const { counters, plan } = viewModel;
+  const { counters, metrics, plan } = viewModel;
 
   return (
     <aside className="progress-panel" aria-label="Research progress">
@@ -61,6 +61,13 @@ export function ResearchProgress({ viewModel, status }: ResearchProgressProps) {
         <span><strong>{counters.accepted}</strong> accepted</span>
         <span><strong>{counters.rejected}</strong> rejected</span>
       </div>
+
+      {metrics ? (
+        <div className="counter-grid" aria-label="Workflow metrics">
+          <span>Search rounds {metrics.searchRounds}/{metrics.searchRoundLimit}</span>
+          <span>Agent operations {metrics.operationCount}/{metrics.operationLimit}</span>
+        </div>
+      ) : null}
 
       {plan ? (
         <div className="plan-summary">
