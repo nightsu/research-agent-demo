@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TavilyError, extractSources, searchWeb } from "./tavily";
+import { MAX_SOURCE_SNIPPET_CHARS } from "../agent/research-types";
 
 const API_KEY = "test-tavily-secret";
 const SENTINEL = "do-not-retain-this-value";
@@ -170,6 +171,24 @@ describe("Tavily tools", () => {
     ]);
   });
 
+  it.each([2_001, 50_000])(
+    "truncates a validated %i-character provider snippet to the domain cap",
+    async (length) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({
+        results: [{
+          title: "Long result",
+          url: articleUrl,
+          content: "x".repeat(length),
+        }],
+      }));
+
+      const [result] = await searchWeb("agent tools", { timeRange: "all" });
+
+      expect(result.snippet).toBe("x".repeat(MAX_SOURCE_SNIPPET_CHARS));
+      expect(result.snippet).toHaveLength(2_000);
+    },
+  );
+
   it("canonicalizes equivalent provider URLs before storing and hashing them", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -273,6 +292,21 @@ describe("Tavily tools", () => {
               title: `${"x".repeat(501)}${SENTINEL}`,
               url: articleUrl,
               content: API_KEY,
+            },
+          ],
+        }),
+      operation: () => searchWeb("agent tools", { timeRange: "all" }),
+    },
+    {
+      label: "search content length",
+      path: "/search",
+      response: () =>
+        jsonResponse({
+          results: [
+            {
+              title: "Oversized content",
+              url: articleUrl,
+              content: `${"x".repeat(50_001)}${SENTINEL}${API_KEY}`,
             },
           ],
         }),

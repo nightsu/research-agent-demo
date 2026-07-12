@@ -115,7 +115,7 @@ export function planPrompt(question: string): string {
 Create a focused research plan for this question:
 ${untrustedBlock("QUESTION", question)}
 
-Return an objective, 1-6 non-overlapping subquestions, and 1-6 precise search queries. Search queries should prioritize official or primary documentation and recent material. Do not answer the research question yet.`;
+Return an objective, 1-6 non-overlapping subquestions, and 1-6 precise search queries of at most 500 characters each. Search queries should prioritize official or primary documentation and recent material. Do not answer the research question yet.`;
 }
 
 export function sourceEvaluationPrompt(
@@ -158,7 +158,7 @@ ${untrustedBlock(
   serializeRecords(evaluations.map(evaluationForSynthesis), 6_000),
 )}
 
-Return whether the evidence is sufficient, a brief observable summary, concrete gaps, and at most 3 targeted follow-up queries. Base the assessment only on supplied source IDs and evaluations.`;
+Return whether the evidence is sufficient, a brief observable summary, concrete gaps, and at most 3 targeted follow-up queries of at most 500 characters each. Base the assessment only on supplied source IDs and evaluations.`;
 }
 
 export function reportPrompt(

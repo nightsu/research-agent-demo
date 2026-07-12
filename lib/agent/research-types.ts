@@ -8,6 +8,13 @@ export const RESEARCH_TEXT_LIMITS = {
   listItems: 50,
   findings: 30,
 } as const;
+export const MAX_SEARCH_QUERY_CHARS = 500;
+export const MAX_SOURCE_SNIPPET_CHARS = RESEARCH_TEXT_LIMITS.short;
+export const searchQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_SEARCH_QUERY_CHARS);
 
 export const researchPhaseSchema = z.enum([
   "planning",
@@ -29,7 +36,7 @@ export const researchInputSchema = z.object({
 export const researchPlanSchema = z.object({
   objective: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
   subquestions: z.array(z.string().min(1).max(RESEARCH_TEXT_LIMITS.short)).min(1).max(6),
-  searchQueries: z.array(z.string().min(1).max(RESEARCH_TEXT_LIMITS.short)).min(1).max(6),
+  searchQueries: z.array(searchQuerySchema).min(1).max(6),
 });
 
 export const httpUrlSchema = z.string().max(4_000).refine(
@@ -49,7 +56,7 @@ export const sourceSchema = z.object({
   title: z.string().min(1).max(RESEARCH_TEXT_LIMITS.title),
   url: httpUrlSchema,
   domain: z.string().min(1).max(RESEARCH_TEXT_LIMITS.title),
-  snippet: z.string().max(RESEARCH_TEXT_LIMITS.short),
+  snippet: z.string().max(MAX_SOURCE_SNIPPET_CHARS),
   rawContent: z.string().max(RESEARCH_TEXT_LIMITS.content).optional(),
   publishedAt: z.string().max(RESEARCH_TEXT_LIMITS.id).optional(),
   score: z.number().min(0).max(1).optional(),
@@ -68,7 +75,7 @@ export const evidenceAssessmentSchema = z.object({
   sufficient: z.boolean(),
   summary: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
   gaps: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(RESEARCH_TEXT_LIMITS.listItems),
-  followUpQueries: z.array(z.string().max(RESEARCH_TEXT_LIMITS.short)).max(3),
+  followUpQueries: z.array(searchQuerySchema).max(3),
 });
 
 export const reportSchema = z.object({

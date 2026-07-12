@@ -4,6 +4,8 @@ import { z } from "zod";
 
 import {
   httpUrlSchema,
+  MAX_SOURCE_SNIPPET_CHARS,
+  searchQuerySchema,
   sourceSchema,
   type Source,
 } from "../agent/research-types";
@@ -11,7 +13,6 @@ import { canonicalizeUrl } from "../agent/research-state";
 
 const DEFAULT_BASE_URL = "https://api.tavily.com";
 
-const querySchema = z.string().trim().min(1).max(500);
 const searchOptionsSchema = z
   .object({
     timeRange: z.enum(["all", "year", "month", "week"]),
@@ -208,7 +209,7 @@ export async function searchWeb(
   options: { timeRange: "all" | "year" | "month" | "week" },
   signal?: AbortSignal,
 ): Promise<Source[]> {
-  const validQuery = parseInput(querySchema, query, "search query");
+  const validQuery = parseInput(searchQuerySchema, query, "search query");
   const validOptions = parseInput(
     searchOptionsSchema,
     options,
@@ -238,7 +239,7 @@ export async function searchWeb(
       title: result.title,
       url: canonicalUrl,
       domain: new URL(canonicalUrl).hostname,
-      snippet: result.content,
+      snippet: result.content.slice(0, MAX_SOURCE_SNIPPET_CHARS),
       publishedAt: result.published_date ?? undefined,
       score: result.score,
     });

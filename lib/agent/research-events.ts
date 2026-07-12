@@ -4,6 +4,7 @@ import {
   httpUrlSchema,
   reportSchema,
   researchPlanSchema,
+  searchQuerySchema,
   sourceEvaluationSchema,
   sourceSchema,
   RESEARCH_TEXT_LIMITS,
@@ -32,12 +33,12 @@ export const researchEventSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("search.started"),
-    query: nonemptyStringSchema,
+    query: searchQuerySchema,
     reason: nonemptyStringSchema,
   }),
   z.strictObject({
     type: z.literal("search.completed"),
-    query: nonemptyStringSchema,
+    query: searchQuerySchema,
     sources: sourceSchema.array().max(RESEARCH_TEXT_LIMITS.listItems),
     // Provider-returned count before any downstream source filtering.
     resultCount: z.number().int().nonnegative(),
@@ -54,7 +55,7 @@ export const researchEventSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("gap.detected"),
     description: nonemptyStringSchema,
-    followUpQueries: nonemptyStringSchema.array().max(3),
+    followUpQueries: searchQuerySchema.array().max(3),
   }),
   z.strictObject({
     type: z.literal("conclusion.updated"),

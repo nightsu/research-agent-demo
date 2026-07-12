@@ -6,7 +6,13 @@ import {
   researchEventSchema,
   type ResearchEvent,
 } from "./research-events";
-import { httpUrlSchema, sourceSchema } from "./research-types";
+import {
+  evidenceAssessmentSchema,
+  researchPlanSchema,
+  searchQuerySchema,
+  sourceSchema,
+  httpUrlSchema,
+} from "./research-types";
 
 const source = {
   id: "source-1",
@@ -95,6 +101,50 @@ describe("research event protocol", () => {
 
   it("rejects a blank plan question", () => {
     expect(() => researchEventSchema.parse({ type: "plan.started", question: "   " })).toThrow();
+  });
+
+  it("accepts 500-character search queries across domain and event boundaries", () => {
+    const query = `  ${"q".repeat(500)}  `;
+
+    expect(searchQuerySchema.parse(query)).toHaveLength(500);
+    expect(researchPlanSchema.parse({
+      objective: "Test query bounds",
+      subquestions: ["What is the boundary?"],
+      searchQueries: [query],
+    }).searchQueries[0]).toHaveLength(500);
+    expect(evidenceAssessmentSchema.parse({
+      sufficient: false,
+      summary: "More evidence is required.",
+      gaps: [],
+      followUpQueries: [query],
+    }).followUpQueries[0]).toHaveLength(500);
+    expect(researchEventSchema.parse({
+      type: "gap.detected",
+      description: "More evidence is required.",
+      followUpQueries: [query],
+    })).toMatchObject({ followUpQueries: ["q".repeat(500)] });
+  });
+
+  it("rejects 501-character search queries across domain and event boundaries", () => {
+    const query = "q".repeat(501);
+
+    expect(() => searchQuerySchema.parse(query)).toThrow();
+    expect(() => researchPlanSchema.parse({
+      objective: "Test query bounds",
+      subquestions: ["What is the boundary?"],
+      searchQueries: [query],
+    })).toThrow();
+    expect(() => evidenceAssessmentSchema.parse({
+      sufficient: false,
+      summary: "More evidence is required.",
+      gaps: [],
+      followUpQueries: [query],
+    })).toThrow();
+    expect(() => researchEventSchema.parse({
+      type: "gap.detected",
+      description: "More evidence is required.",
+      followUpQueries: [query],
+    })).toThrow();
   });
 
   it("rejects an oversized public failure message", () => {
