@@ -8,7 +8,7 @@ import {
 } from "@/lib/agent/research-events";
 import {
   researchInputSchema,
-  type ResearchInput,
+  type ResearchRequest,
 } from "@/lib/agent/research-types";
 
 export type ResearchRunStatus =
@@ -81,7 +81,7 @@ function isTerminal(event: ResearchEvent): boolean {
 
 export function useResearchStream(): {
   run: ResearchRun;
-  start(input: ResearchInput): Promise<void>;
+  start(input: ResearchRequest): Promise<void>;
   cancel(): void;
   reset(): void;
 } {
@@ -107,7 +107,7 @@ export function useResearchStream(): {
   }, []);
 
   const start = useCallback(
-    async (rawInput: ResearchInput) => {
+    async (rawInput: ResearchRequest) => {
       controllerRef.current?.abort();
       const generation = ++generationRef.current;
       const parsed = researchInputSchema.safeParse(rawInput);
@@ -242,6 +242,13 @@ export function useResearchStream(): {
             await reader.cancel();
           } catch {
             // The public protocol error is already recorded.
+          }
+        }
+        if (reader) {
+          try {
+            reader.releaseLock();
+          } catch {
+            // Lock cleanup must never replace the run's terminal outcome.
           }
         }
         if (isCurrent(generation)) controllerRef.current = null;

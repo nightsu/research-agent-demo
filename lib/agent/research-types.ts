@@ -78,6 +78,7 @@ export const reportSchema = z.object({
 });
 
 export type ResearchPhase = z.infer<typeof researchPhaseSchema>;
+export type ResearchRequest = z.input<typeof researchInputSchema>;
 export type ResearchInput = z.infer<typeof researchInputSchema>;
 export type ResearchPlan = z.infer<typeof researchPlanSchema>;
 export type Source = z.infer<typeof sourceSchema>;

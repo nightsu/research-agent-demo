@@ -3,7 +3,10 @@ import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ResearchEvent } from "@/lib/agent/research-events";
-import type { ResearchInput } from "@/lib/agent/research-types";
+import type {
+  ResearchInput,
+  ResearchRequest,
+} from "@/lib/agent/research-types";
 
 import { useResearchStream } from "./use-research-stream";
 
@@ -69,6 +72,7 @@ function responseFromChunks(
             options.onCancel?.();
             await reader.cancel();
           },
+          releaseLock: () => reader.releaseLock(),
         };
       },
     },
@@ -104,6 +108,7 @@ function responseFromByteChunks(
             onReaderCancel();
             await reader.cancel();
           },
+          releaseLock: () => reader.releaseLock(),
         };
       },
     },
@@ -135,6 +140,28 @@ function deferredResponse() {
       controller.error(error);
     },
     cancelled,
+  };
+}
+
+function responseWithReaderSpies(chunks: string[]) {
+  const response = responseFromChunks(chunks);
+  const reader = response.body!.getReader();
+  const cancel = vi.fn(() => reader.cancel());
+  const releaseLock = vi.fn(() => reader.releaseLock());
+
+  return {
+    response: {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: () => reader.read(),
+          cancel,
+          releaseLock,
+        }),
+      },
+    } as unknown as Response,
+    cancel,
+    releaseLock,
   };
 }
 
@@ -294,15 +321,15 @@ describe("useResearchStream", () => {
       );
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderHook(() => useResearchStream());
+    const defaultedRequest: ResearchRequest = { question: input.question };
+    const explicitRequest: ResearchRequest = {
+      ...input,
+      timeRange: "week",
+      depth: "deep",
+    };
 
-    await act(() =>
-      result.current.start({
-        question: input.question,
-      } as unknown as ResearchInput),
-    );
-    await act(() =>
-      result.current.start({ ...input, timeRange: "week", depth: "deep" }),
-    );
+    await act(() => result.current.start(defaultedRequest));
+    await act(() => result.current.start(explicitRequest));
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       question: input.question,
@@ -314,6 +341,39 @@ describe("useResearchStream", () => {
       timeRange: "week",
       depth: "deep",
     });
+  });
+
+  it("releases the reader lock exactly once after normal completion", async () => {
+    const stream = responseWithReaderSpies([
+      line({ type: "report.completed", report }),
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.status).toBe("completed");
+    expect(stream.cancel).not.toHaveBeenCalled();
+    expect(stream.releaseLock).toHaveBeenCalledOnce();
+  });
+
+  it("cancels and releases the reader once after a protocol failure", async () => {
+    const stream = responseWithReaderSpies(["not-json\n"]);
+    stream.releaseLock.mockImplementationOnce(() => {
+      throw new Error("release-lock-secret");
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run).toEqual({
+      status: "failed",
+      events: [],
+      error: "Research stream protocol error.",
+    });
+    expect(stream.cancel).toHaveBeenCalledOnce();
+    expect(stream.releaseLock).toHaveBeenCalledOnce();
   });
 
   it("fails safely for invalid input before fetching", async () => {
