@@ -80,10 +80,13 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
     const encoder = new TextEncoder();
     let writable = true;
     let closed = false;
+    let cleanedUp = false;
     let eventCount = 0;
     let terminalEvent: ResearchEvent["type"] | null = null;
 
     const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       request.signal.removeEventListener("abort", onRequestAbort);
     };
 

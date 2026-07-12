@@ -207,6 +207,38 @@ describe("POST /api/research", () => {
     expect(workflowSignal.reason).toBe("consumer left");
   });
 
+  it("removes request abort wiring once when cancel and workflow completion race", async () => {
+    const requestController = new AbortController();
+    const researchRequest = jsonRequest(
+      { question },
+      requestController.signal,
+    );
+    const removeListener = vi.spyOn(researchRequest.signal, "removeEventListener");
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies, signal) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        await new Promise<void>((resolve) =>
+          signal!.addEventListener("abort", () => resolve(), { once: true }),
+        );
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+    const response = await post(researchRequest);
+    const reader = response.body!.getReader();
+    await reader.read();
+
+    await reader.cancel("consumer left");
+    await run.mock.results[0].value;
+    await Promise.resolve();
+
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    expect(removeListener).toHaveBeenCalledWith(
+      "abort",
+      expect.any(Function),
+    );
+  });
+
   it("closes cleanly when the workflow rejects after emitting a sanitized failure", async () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (_input, dependencies) => {
