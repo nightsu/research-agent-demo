@@ -136,6 +136,26 @@ export function validateReportCitations(
   return citationSchema.parse(report);
 }
 
+function selectAcceptedEvidence(
+  sources: Source[],
+  evaluations: SourceEvaluation[],
+): { sources: Source[]; evaluations: SourceEvaluation[] } {
+  const knownSourceIds = new Set(sources.map((source) => source.id));
+  const acceptedEvaluations = evaluations.filter(
+    (evaluation) =>
+      evaluation.decision === "accepted" &&
+      knownSourceIds.has(evaluation.sourceId),
+  );
+  const acceptedSourceIds = new Set(
+    acceptedEvaluations.map((evaluation) => evaluation.sourceId),
+  );
+
+  return {
+    sources: sources.filter((source) => acceptedSourceIds.has(source.id)),
+    evaluations: acceptedEvaluations,
+  };
+}
+
 async function generateValidated<T>(
   schema: ZodType<T>,
   prompt: string,
@@ -204,32 +224,23 @@ export function createResearchModel(): ResearchModel {
       );
     },
     assessEvidence(question, sources, evaluations, options) {
+      const accepted = selectAcceptedEvidence(sources, evaluations);
+
       return generateValidated(
         evidenceAssessmentSchema,
-        evidencePrompt(question, sources, evaluations),
+        evidencePrompt(question, accepted.sources, accepted.evaluations),
         options,
       );
     },
     generateReport(question, sources, evaluations, partial, options) {
-      const knownSourceIds = new Set(sources.map((source) => source.id));
-      const acceptedEvaluations = evaluations.filter(
-        (evaluation) =>
-          evaluation.decision === "accepted" &&
-          knownSourceIds.has(evaluation.sourceId),
-      );
-      const acceptedSourceIds = new Set(
-        acceptedEvaluations.map((evaluation) => evaluation.sourceId),
-      );
-      const acceptedSources = sources.filter((source) =>
-        acceptedSourceIds.has(source.id),
-      );
+      const accepted = selectAcceptedEvidence(sources, evaluations);
 
       return generateValidated(
         reportSchema,
         reportPrompt(
           question,
-          acceptedSources,
-          acceptedEvaluations,
+          accepted.sources,
+          accepted.evaluations,
           partial,
         ),
         options,
