@@ -37,15 +37,6 @@ const terminalEventTypes = new Set<ResearchEvent["type"]>([
   "research.failed",
 ]);
 
-function isAbortFailure(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "name" in error &&
-    error.name === "AbortError"
-  );
-}
-
 export interface ResearchRouteDependencies {
   createModel: () => ResearchModel;
   runResearch: typeof runResearch;
@@ -150,6 +141,21 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
           if (terminalEventTypes.has(event.type)) terminalEvent = event.type;
         };
 
+        const ensureTerminal = async (): Promise<void> => {
+          if (
+            !writable ||
+            workflowController.signal.aborted ||
+            terminalEvent !== null
+          ) {
+            return;
+          }
+          try {
+            await emit(FALLBACK_FAILURE);
+          } catch {
+            // Cancellation or a concurrent close can make the stream unwritable.
+          }
+        };
+
         void dependencies
           .runResearch(
             input,
@@ -161,21 +167,7 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
             },
             workflowController.signal,
           )
-          .catch(async (error: unknown) => {
-            if (
-              !writable ||
-              workflowController.signal.aborted ||
-              isAbortFailure(error) ||
-              terminalEvent !== null
-            ) {
-              return;
-            }
-            try {
-              await emit(FALLBACK_FAILURE);
-            } catch {
-              // Cancellation or a concurrent close can make the stream unwritable.
-            }
-          })
+          .then(ensureTerminal, ensureTerminal)
           .finally(() => {
             cleanup();
             if (writable && !closed) {

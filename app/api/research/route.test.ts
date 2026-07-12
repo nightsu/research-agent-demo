@@ -284,6 +284,48 @@ describe("POST /api/research", () => {
     ]);
   });
 
+  it("adds one failed terminal event when research resolves after progress", async () => {
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({ type: "plan.started", question: input.question });
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+
+    const events = await readEvents(await post(jsonRequest({ question })));
+
+    expect(events).toEqual([
+      { type: "plan.started", question },
+      {
+        type: "research.failed",
+        message: "The research request failed.",
+        recoverable: false,
+      },
+    ]);
+  });
+
+  it("adds a failed terminal for dependency AbortError without route cancellation", async () => {
+    const dependencyAbort = new DOMException(
+      "dependency stopped itself",
+      "AbortError",
+    );
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(async () => {
+      throw dependencyAbort;
+    });
+    const { post } = harness(run);
+
+    const events = await readEvents(await post(jsonRequest({ question })));
+
+    expect(events).toEqual([
+      {
+        type: "research.failed",
+        message: "The research request failed.",
+        recoverable: false,
+      },
+    ]);
+  });
+
   it("rejects events after the first terminal event", async () => {
     let rejectedAfterTerminal = false;
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
