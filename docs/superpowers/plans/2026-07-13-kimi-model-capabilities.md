@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Route `kimi-k2.6` structured generations through native JSON Schema with default thinking disabled, without changing DeepSeek or timeout behavior.
+**Goal:** Produce reliable Kimi structured generations through Prompted JSON Object mode with default thinking disabled, without changing DeepSeek or timeout behavior.
 
-**Architecture:** Add a small typed registry keyed by provider and model ID, with conservative defaults for unknown models. The Kimi provider passes the resolved Structured Output capability into the existing OpenAI-compatible adapter and uses a focused request transformer to inject Kimi's verified non-thinking setting; JSON Schema conversion remains owned by AI SDK.
+**Architecture:** Keep a typed registry keyed by provider and model ID, with conservative defaults for unknown models. Kimi uses JSON mode plus a focused non-thinking request transformer; the generation helper derives an exact JSON contract from the domain Zod schema, requests unstructured JSON through AI SDK, and applies Zod as the final shape boundary.
 
 **Tech Stack:** TypeScript, Next.js 16.2, AI SDK 6, `@ai-sdk/openai-compatible`, Vitest, Zod
 
@@ -18,6 +18,8 @@
 - Create `lib/providers/kimi-request-transformer.test.ts`: verify disabled-thinking injection and conservative pass-through behavior.
 - Modify `lib/providers/index.ts`: resolve the Kimi model once and pass its registered structured-output capability to AI SDK.
 - Modify `lib/providers/index.test.ts`: lock down default Kimi, overridden Kimi, and unchanged DeepSeek adapter configuration.
+- Modify `lib/providers/research-model.ts`: append schema-derived JSON contracts, use `Output.json`, and wrap source-evaluation arrays in a top-level object.
+- Modify `lib/providers/research-model.test.ts`: verify prompted JSON contracts, manual Zod parsing, repair reuse, and source-evaluation wrapping.
 - Modify `docs/architecture.md`: document the model-specific capability boundary and conservative fallback.
 
 ### Task 1: Add the typed model capability registry
@@ -484,7 +486,217 @@ git diff --cached --check
 git commit -m "fix: disable Kimi thinking for structured research"
 ```
 
-### Task 4: Document and verify the completed integration
+### Task 4: Implement Prompted JSON Object generation
+
+**Files:**
+- Modify: `lib/providers/model-capabilities.ts`
+- Modify: `lib/providers/model-capabilities.test.ts`
+- Modify: `lib/providers/index.test.ts`
+- Modify: `lib/providers/research-model.ts`
+- Modify: `lib/providers/research-model.test.ts`
+
+- [ ] **Step 1: Correct the verified Kimi capability test**
+
+Change the known Kimi expectation in `lib/providers/model-capabilities.test.ts` to:
+
+```ts
+expect(getModelCapabilities("kimi", "kimi-k2.6")).toEqual({
+  structuredOutputs: false,
+  thinkingMode: "disabled",
+});
+```
+
+Change the default Kimi adapter expectation in `lib/providers/index.test.ts` to `supportsStructuredOutputs: false`. Keep the disabled-thinking transformer assertion and all DeepSeek expectations unchanged.
+
+- [ ] **Step 2: Run capability and provider tests to verify RED**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts lib/providers/index.test.ts
+```
+
+Expected: FAIL because the registered Kimi capability still reports native Structured Output support.
+
+- [ ] **Step 3: Disable the overstated native capability**
+
+Update the Kimi registry entry in `lib/providers/model-capabilities.ts`:
+
+```ts
+"kimi:kimi-k2.6": {
+  structuredOutputs: false,
+  thinkingMode: "disabled",
+},
+```
+
+- [ ] **Step 4: Run capability and provider tests to verify GREEN**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts lib/providers/index.test.ts
+```
+
+Expected: both focused files pass; Kimi JSON mode and disabled thinking are independently represented.
+
+- [ ] **Step 5: Write failing Prompted JSON Object tests**
+
+In `lib/providers/research-model.test.ts`, replace the mocked `Output.object` helper with `Output.json`:
+
+```ts
+const { generateText, getResearchModel, jsonOutput } = vi.hoisted(() => ({
+  generateText: vi.fn(),
+  getResearchModel: vi.fn(),
+  jsonOutput: vi.fn(() => ({ kind: "json" })),
+}));
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return {
+    ...actual,
+    generateText,
+    Output: { json: jsonOutput },
+  };
+});
+```
+
+Update the stage matrix so source evaluation's provider output is `{ evaluations }` while its public expected result remains `evaluations`. Other provider outputs and public results remain identical. Assert every request:
+
+```ts
+expect(request.output).toEqual({ kind: "json" });
+expect(request.prompt).toContain("Return only one JSON object");
+expect(request.prompt).toContain("Use the exact property names from this JSON Schema");
+expect(request.prompt).toContain("Do not wrap the JSON in Markdown or add explanatory text");
+expect(request.prompt.lastIndexOf("Output JSON Schema:"))
+  .toBeGreaterThan(request.prompt.lastIndexOf("[END UNTRUSTED"));
+```
+
+For each stage, assert the contract contains its exact top-level keys:
+
+```ts
+const expectedKeys = {
+  generatePlan: ["objective", "subquestions", "searchQueries"],
+  evaluateSources: ["evaluations"],
+  assessEvidence: ["sufficient", "summary", "gaps", "followUpQueries"],
+  generateReport: ["title", "executiveSummary", "findings", "trends", "disagreements", "limitations"],
+}[method];
+for (const key of expectedKeys) expect(request.prompt).toContain(`"${key}"`);
+```
+
+Update every mocked successful or invalid source-evaluation provider output to use `{ evaluations: value }`, including malicious-source, oversized-source, and invalid-integrity cases. Keep public method results and integrity expectations as arrays.
+
+Extend the existing repair test to assert both calls contain one schema contract and the repair call places it after the repair instruction:
+
+```ts
+for (const call of generateText.mock.calls) {
+  expect(call[0].prompt.match(/Output JSON Schema:/g)).toHaveLength(1);
+}
+expect(generateText.mock.calls[1][0].prompt.lastIndexOf("Output JSON Schema:"))
+  .toBeGreaterThan(
+    generateText.mock.calls[1][0].prompt.indexOf("Repair instruction:"),
+  );
+```
+
+- [ ] **Step 6: Run research-model tests to verify RED**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/research-model.test.ts
+```
+
+Expected: FAIL because the implementation still calls `Output.object`, does not append a schema contract, and expects a top-level evaluation array.
+
+- [ ] **Step 7: Implement schema-derived Prompted JSON Object generation**
+
+Update imports in `lib/providers/research-model.ts`:
+
+```ts
+import { generateText, NoObjectGeneratedError, Output } from "ai";
+import { toJSONSchema, z, ZodError, type ZodType } from "zod";
+```
+
+Wrap the evaluation transport shape:
+
+```ts
+const sourceEvaluationsSchema = sourceEvaluationSchema.array().max(50);
+const sourceEvaluationsOutputSchema = z.object({
+  evaluations: sourceEvaluationsSchema,
+});
+```
+
+Add the shared contract helper before `generateValidated`:
+
+```ts
+function appendJsonContract<T>(prompt: string, schema: ZodType<T>): string {
+  const contract = JSON.stringify(toJSONSchema(schema, { target: "draft-7" }));
+
+  return `${prompt}
+
+Return only one JSON object.
+Use the exact property names from this JSON Schema.
+Do not wrap the JSON in Markdown or add explanatory text.
+Output JSON Schema:
+${contract}`;
+}
+```
+
+In each `attempt`, request JSON without transmitting a native schema and apply Zod locally:
+
+```ts
+const result = await generateText({
+  model,
+  system: RESEARCH_SYSTEM_PROMPT,
+  prompt: appendJsonContract(attemptPrompt, schema),
+  output: Output.json(),
+  abortSignal: options.abortSignal,
+  maxOutputTokens,
+});
+
+if (result.output == null) throw new MissingStructuredOutputError();
+return validate(schema.parse(result.output));
+```
+
+Make `evaluateSources` async, generate the wrapper, preserve the existing integrity validator, and return the public array:
+
+```ts
+async evaluateSources(question, sources, options) {
+  const output = await generateValidated(
+    sourceEvaluationsOutputSchema,
+    sourceEvaluationPrompt(question, sources),
+    6_000,
+    options,
+    (value) => ({
+      evaluations: validateSourceEvaluations(sources, value.evaluations),
+    }),
+  );
+
+  return output.evaluations;
+},
+```
+
+- [ ] **Step 8: Run focused tests and static checks**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts lib/providers/index.test.ts lib/providers/research-model.test.ts
+npm run typecheck
+npm run lint
+git diff --check
+```
+
+Expected: all focused tests, typecheck, lint, and whitespace validation pass. No AI SDK unsupported-response-format warning is produced by the unit tests because `Output.json()` carries no schema.
+
+- [ ] **Step 9: Commit Prompted JSON Object support**
+
+```bash
+git add lib/providers/model-capabilities.ts lib/providers/model-capabilities.test.ts lib/providers/index.test.ts lib/providers/research-model.ts lib/providers/research-model.test.ts
+git diff --cached --check
+git commit -m "fix: prompt Kimi for schema-shaped JSON"
+```
+
+### Task 5: Document and verify the completed integration
 
 **Files:**
 - Modify: `docs/architecture.md:162-166`
@@ -494,7 +706,7 @@ git commit -m "fix: disable Kimi thinking for structured research"
 Replace the first provider-boundary paragraph with:
 
 ```markdown
-`ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModel()` 按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model；模型能力注册表按 `provider:model` 保存已经验证的协议能力，未知模型采用保守默认值。当前 `kimi:k2.6` 注册原生 Structured Output，并通过 Kimi request transformer 为这些独立的结构化生成禁用默认 thinking；DeepSeek 配置保持不变。只有无法由能力标记表达的协议差异才应扩展 provider strategy，避免重复 AI SDK 已有的请求和响应转换。
+`ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModel()` 按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model；模型能力注册表按 `provider:model` 保存已经验证的协议能力，未知模型采用保守默认值。当前 `kimi:k2.6` 使用 Prompted JSON Object：Kimi request transformer 禁用默认 thinking，通用生成层从 Zod Schema 派生精确 JSON 合约并在本地完成最终校验；DeepSeek 配置保持不变。只有无法由能力标记表达的协议差异才应扩展 provider strategy，避免重复 AI SDK 已有的请求和响应转换。
 ```
 
 - [ ] **Step 2: Run all static and automated verification**
