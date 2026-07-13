@@ -12,6 +12,7 @@ describe("model capabilities", () => {
   it.each([
     ["kimi", "custom-model"],
     ["deepseek", "deepseek-v4-flash"],
+    ["deepseek", "kimi-k2.6"],
   ] as const)(
     "uses conservative capabilities for %s:%s",
     (providerName, modelId) => {

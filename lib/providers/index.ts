@@ -1,6 +1,8 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
-export type ProviderName = "kimi" | "deepseek";
+import type { ProviderName } from "./model-capabilities";
+
+export type { ProviderName };
 
 function requireApiKey(providerName: ProviderName, variableName: string): string {
   const apiKey = process.env[variableName];
