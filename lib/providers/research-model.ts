@@ -1,5 +1,5 @@
 import { generateText, NoObjectGeneratedError, Output } from "ai";
-import { ZodError, type ZodType } from "zod";
+import { toJSONSchema, z, ZodError, type ZodType } from "zod";
 
 import {
   evidenceAssessmentSchema,
@@ -59,6 +59,23 @@ export class MissingStructuredOutputError extends Error {
 }
 
 const sourceEvaluationsSchema = sourceEvaluationSchema.array().max(50);
+const sourceEvaluationsOutputSchema = z.object({
+  evaluations: sourceEvaluationsSchema,
+});
+
+function appendJsonContract<T>(prompt: string, schema: ZodType<T>): string {
+  const jsonSchema = JSON.stringify(
+    toJSONSchema(schema, { target: "draft-7" }),
+  );
+
+  return `${prompt}
+
+Return only one JSON object.
+Use the exact property names from this JSON Schema.
+Do not wrap the JSON in Markdown or add explanatory text.
+Output JSON Schema:
+${jsonSchema}`;
+}
 
 function isRepairableStructuredOutputError(error: unknown): boolean {
   return (
@@ -173,8 +190,8 @@ async function generateValidated<T>(
     const result = await generateText({
       model,
       system: RESEARCH_SYSTEM_PROMPT,
-      prompt: attemptPrompt,
-      output: Output.object({ schema }),
+      prompt: appendJsonContract(attemptPrompt, schema),
+      output: Output.json(),
       abortSignal: options.abortSignal,
       maxOutputTokens,
     });
@@ -183,8 +200,7 @@ async function generateValidated<T>(
       throw new MissingStructuredOutputError();
     }
 
-    // Output.object validates the provider response, and this parse keeps the
-    // application schema as the final boundary even for mocked or future SDK results.
+    // Output.json parses JSON syntax; Zod remains the final application boundary.
     return validate(schema.parse(result.output));
   };
 
@@ -222,14 +238,18 @@ export function createResearchModel(): ResearchModel {
         options,
       );
     },
-    evaluateSources(question, sources, options) {
-      return generateValidated(
-        sourceEvaluationsSchema,
+    async evaluateSources(question, sources, options) {
+      const output = await generateValidated(
+        sourceEvaluationsOutputSchema,
         sourceEvaluationPrompt(question, sources),
         6_000,
         options,
-        (output) => validateSourceEvaluations(sources, output),
+        (value) => ({
+          evaluations: validateSourceEvaluations(sources, value.evaluations),
+        }),
       );
+
+      return output.evaluations;
     },
     assessEvidence(question, sources, evaluations, options) {
       const accepted = selectAcceptedEvidence(sources, evaluations);

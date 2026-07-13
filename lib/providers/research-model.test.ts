@@ -18,10 +18,10 @@ import {
   sourceEvaluationPrompt,
 } from "../agent/prompts";
 
-const { generateText, getResearchModel, objectOutput } = vi.hoisted(() => ({
+const { generateText, getResearchModel, jsonOutput } = vi.hoisted(() => ({
   generateText: vi.fn(),
   getResearchModel: vi.fn(),
-  objectOutput: vi.fn(({ schema }) => ({ kind: "object", schema })),
+  jsonOutput: vi.fn(() => ({ kind: "json" })),
 }));
 
 vi.mock("ai", async (importOriginal) => {
@@ -30,7 +30,7 @@ vi.mock("ai", async (importOriginal) => {
   return {
     ...actual,
     generateText,
-    Output: { object: objectOutput },
+    Output: { json: jsonOutput },
   };
 });
 
@@ -103,45 +103,73 @@ function expectAggregateError(error: unknown): asserts error is AggregateError {
   }
 }
 
+function parseOutputJsonSchema(prompt: string): Record<string, unknown> {
+  const marker = "Output JSON Schema:";
+  const markerIndex = prompt.indexOf(marker);
+
+  expect(markerIndex).toBeGreaterThanOrEqual(0);
+  return JSON.parse(prompt.slice(markerIndex + marker.length).trim()) as Record<
+    string,
+    unknown
+  >;
+}
+
 describe("structured research model", () => {
   beforeEach(() => {
     generateText.mockReset();
     getResearchModel.mockReset().mockReturnValue(selectedModel);
-    objectOutput.mockClear();
+    jsonOutput.mockClear();
   });
 
   it.each([
     {
       method: "generatePlan" as const,
-      output: plan,
+      providerOutput: plan,
+      publicResult: plan,
       schema: researchPlanSchema,
+      topLevelKeys: ["objective", "subquestions", "searchQueries"],
       promptFragments: [question],
     },
     {
       method: "evaluateSources" as const,
-      output: evaluations,
+      providerOutput: { evaluations },
+      publicResult: evaluations,
       schema: sourceEvaluationSchema.array(),
+      topLevelKeys: ["evaluations"],
       promptFragments: [question, "source-kimi", "source-deepseek"],
     },
     {
       method: "assessEvidence" as const,
-      output: evidence,
+      providerOutput: evidence,
+      publicResult: evidence,
       schema: evidenceAssessmentSchema,
+      topLevelKeys: ["sufficient", "summary", "gaps", "followUpQueries"],
       promptFragments: [question, "source-kimi", "source-deepseek"],
     },
     {
       method: "generateReport" as const,
-      output: report,
+      providerOutput: report,
+      publicResult: report,
       schema: reportSchema,
+      topLevelKeys: [
+        "title",
+        "executiveSummary",
+        "findings",
+        "trends",
+        "disagreements",
+        "limitations",
+      ],
       promptFragments: [question, "source-kimi", "source-deepseek"],
     },
   ])("$method uses the selected model, schema, and focused prompt", async ({
     method,
-    output,
+    providerOutput,
+    publicResult,
     schema,
+    topLevelKeys,
     promptFragments,
   }) => {
-    generateText.mockResolvedValueOnce({ output });
+    generateText.mockResolvedValueOnce({ output: providerOutput });
     const researchModel = createResearchModel();
 
     const result =
@@ -158,21 +186,15 @@ describe("structured research model", () => {
                 true,
               );
 
-    expect(result).toEqual(output);
+    expect(result).toEqual(publicResult);
     expect(getResearchModel).toHaveBeenCalledTimes(1);
-    expect(objectOutput).toHaveBeenCalledTimes(1);
-    const actualSchema = objectOutput.mock.calls[0][0].schema;
-    if (method === "evaluateSources") {
-      expect(actualSchema.element).toBe(sourceEvaluationSchema);
-    } else {
-      expect(actualSchema).toBe(schema);
-    }
-    expect(actualSchema.safeParse(output).success).toBe(true);
+    expect(jsonOutput).toHaveBeenCalledTimes(1);
+    expect(schema.safeParse(publicResult).success).toBe(true);
     expect(generateText).toHaveBeenCalledTimes(1);
     const request = generateText.mock.calls[0][0];
     expect(request.model).toBe(selectedModel);
     expect(request.system).toBe(RESEARCH_SYSTEM_PROMPT);
-    expect(request.output).toEqual({ kind: "object", schema: actualSchema });
+    expect(request.output).toEqual({ kind: "json" });
     expect(request.maxOutputTokens).toBe({
       generatePlan: 2_500,
       evaluateSources: 6_000,
@@ -182,6 +204,19 @@ describe("structured research model", () => {
     for (const fragment of promptFragments) {
       expect(request.prompt).toContain(fragment);
     }
+    expect(request.prompt).toContain("Return only one JSON object.");
+    expect(request.prompt).toContain(
+      "Use the exact property names from this JSON Schema.",
+    );
+    expect(request.prompt).toContain(
+      "Do not wrap the JSON in Markdown or add explanatory text.",
+    );
+    expect(request.prompt).toContain("Output JSON Schema:");
+    expect(request.prompt.indexOf("Output JSON Schema:")).toBeGreaterThan(
+      request.prompt.lastIndexOf("[END UNTRUSTED"),
+    );
+    const outputSchema = parseOutputJsonSchema(request.prompt);
+    expect(Object.keys(outputSchema.properties as object)).toEqual(topLevelKeys);
   });
 
   it.each([
@@ -211,6 +246,15 @@ describe("structured research model", () => {
       "Repair instruction: the previous generation failed validation",
     );
     expect(generateText.mock.calls[1][0].prompt).toContain(question);
+    for (const [attemptIndex, call] of generateText.mock.calls.entries()) {
+      const attemptPrompt = call[0].prompt as string;
+      expect(attemptPrompt.match(/Output JSON Schema:/g)).toHaveLength(1);
+      if (attemptIndex === 1) {
+        expect(attemptPrompt.indexOf("Output JSON Schema:")).toBeGreaterThan(
+          attemptPrompt.indexOf("Repair instruction:"),
+        );
+      }
+    }
   });
 
   it.each([
@@ -252,8 +296,8 @@ describe("structured research model", () => {
     ],
   ])("rejects %s source evaluations", async (_label, invalidEvaluations) => {
     generateText
-      .mockResolvedValueOnce({ output: invalidEvaluations })
-      .mockResolvedValueOnce({ output: invalidEvaluations });
+      .mockResolvedValueOnce({ output: { evaluations: invalidEvaluations } })
+      .mockResolvedValueOnce({ output: { evaluations: invalidEvaluations } });
 
     const error = await createResearchModel()
       .evaluateSources(question, sources)
@@ -351,7 +395,7 @@ describe("structured research model", () => {
       { ...sources[0], rawContent: `${injection}. Evidence follows.` },
       sources[1],
     ];
-    generateText.mockResolvedValueOnce({ output: evaluations });
+    generateText.mockResolvedValueOnce({ output: { evaluations } });
 
     await createResearchModel().evaluateSources(question, maliciousSources);
 
@@ -379,7 +423,9 @@ describe("structured research model", () => {
       ...evaluations[0],
       sourceId: source.id,
     }));
-    generateText.mockResolvedValueOnce({ output: oversizedEvaluations });
+    generateText.mockResolvedValueOnce({
+      output: { evaluations: oversizedEvaluations },
+    });
 
     await createResearchModel().evaluateSources(question, oversizedSources);
 

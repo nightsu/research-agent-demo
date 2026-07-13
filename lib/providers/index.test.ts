@@ -41,7 +41,7 @@ describe("research provider selection", () => {
       name: "kimi",
       apiKey: "kimi-key",
       baseURL: "https://api.moonshot.cn/v1",
-      supportsStructuredOutputs: true,
+      supportsStructuredOutputs: false,
       transformRequestBody: expect.any(Function),
     });
     const transformRequestBody = createOpenAICompatible.mock.calls[0][0]

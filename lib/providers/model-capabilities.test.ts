@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { getModelCapabilities } from "./model-capabilities";
 
 describe("model capabilities", () => {
-  it("enables structured outputs for Kimi K2.6", () => {
+  it("uses prompted JSON for Kimi K2.6", () => {
     expect(getModelCapabilities("kimi", "kimi-k2.6")).toEqual({
-      structuredOutputs: true,
+      structuredOutputs: false,
       thinkingMode: "disabled",
     });
   });

@@ -18,7 +18,7 @@ const MODEL_CAPABILITIES: Readonly<
   Partial<Record<ModelKey, ModelCapabilities>>
 > = {
   "kimi:kimi-k2.6": {
-    structuredOutputs: true,
+    structuredOutputs: false,
     thinkingMode: "disabled",
   },
 };
