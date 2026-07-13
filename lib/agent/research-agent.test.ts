@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  defaultResearchLimits,
+  quickResearchLimits,
+  researchLimitsSchema,
+} from "./limits";
 import { researchEventSchema, type ResearchEvent } from "./research-events";
 import type {
   EvidenceAssessment,
@@ -115,6 +120,14 @@ function harness(overrides: Partial<ResearchDependencies> = {}) {
   };
   return { deps, events };
 }
+
+describe("research limits", () => {
+  it("uses the maximum allowed timeout for quick and deep research", () => {
+    expect(defaultResearchLimits.requestTimeoutMs).toBe(120_000);
+    expect(quickResearchLimits.requestTimeoutMs).toBe(120_000);
+    expect(researchLimitsSchema.safeParse(defaultResearchLimits).success).toBe(true);
+  });
+});
 
 describe("runResearch", () => {
   it("emits the explicit happy-path checkpoints and completes with a report", async () => {

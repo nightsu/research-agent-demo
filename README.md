@@ -70,7 +70,7 @@ npm run build -- --webpack  # 生产构建；显式使用 webpack
 
 表单中的 `timeRange` 是 Tavily 搜索时间筛选：`week`、`month`、`year` 会传给 Tavily，`all` 表示不传 `time_range`。它不改变 Tavily 的搜索深度；当前适配器始终使用 `search_depth: basic`。
 
-`quick` 与 `deep` 使用同一条工作流和 12 次总 operation 预算，每轮都最多保留 6 条结果，单次模型 / Tavily 调用超时均为 30 秒。`quick` 最多搜索 2 轮、读取 6 个来源；`deep` 最多搜索 5 轮、读取 12 个来源。实际流程也可能因报告预留、证据已足够或预算耗尽而提前结束。运行时唯一事实来源是 [`lib/agent/limits.ts`](lib/agent/limits.ts)。
+`quick` 与 `deep` 使用同一条工作流和 12 次总 operation 预算，每轮都最多保留 6 条结果，单次模型 / Tavily 调用超时均为 120 秒。`quick` 最多搜索 2 轮、读取 6 个来源；`deep` 最多搜索 5 轮、读取 12 个来源。实际流程也可能因报告预留、证据已足够或预算耗尽而提前结束。运行时唯一事实来源是 [`lib/agent/limits.ts`](lib/agent/limits.ts)。
 
 ## 完整研究流程
 

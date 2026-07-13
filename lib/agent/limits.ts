@@ -21,7 +21,7 @@ export const defaultResearchLimits: ResearchLimits = {
   maxSearchRounds: 5,
   maxResultsPerRound: 6,
   maxSourcesToRead: 12,
-  requestTimeoutMs: 30_000,
+  requestTimeoutMs: 120_000,
 };
 
 export const quickResearchLimits: ResearchLimits = {
