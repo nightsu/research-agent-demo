@@ -21,7 +21,7 @@ Provider selection, model capabilities, and provider-specific protocol behavior 
 - `ProviderName` selects a provider and its credentials, base URL, and default model.
 - A typed model capability registry records behavior verified for a specific provider and model combination. The initial capabilities are `structuredOutputs` and `thinkingMode`; live evidence keeps `structuredOutputs` disabled for `kimi-k2.6` despite the endpoint accepting the parameter.
 - A small Kimi request transformer maps the registered `thinkingMode` capability to Kimi's provider-specific request body. It does not parse responses or duplicate AI SDK's Structured Output conversion.
-- The shared structured-generation helper appends a compact JSON Schema contract derived from the same Zod schema passed to `Output.object`. The contract appears after all untrusted data and requires one JSON object with exact property names and no Markdown wrapper.
+- The shared structured-generation helper appends a compact JSON Schema contract derived from the same Zod schema used for final parsing. The contract appears after all untrusted data and requires one JSON object with exact property names and no Markdown wrapper.
 - Additional provider strategy hooks remain reserved for protocol differences such as assistant metadata replay.
 
 Capabilities are model-specific rather than provider-wide. A known `kimi:kimi-k2.6` entry uses `structuredOutputs: false` and `thinkingMode: "disabled"` for bounded Prompted JSON Object generations. Unknown or overridden models use `structuredOutputs: false` and `thinkingMode: "enabled"`; the transformer only injects an override for `"disabled"`, so conservative models retain their provider default. DeepSeek remains unchanged and does not inherit Kimi capabilities.
@@ -47,9 +47,9 @@ The registry configures the existing AI SDK adapter; it does not implement a cus
 3. The Kimi OpenAI-compatible provider receives `supportsStructuredOutputs: false` and a request transformer.
 4. For registered `kimi-k2.6`, the transformer preserves the AI SDK request body and adds `thinking: { "type": "disabled" }`.
 5. The generation helper derives a compact JSON Schema contract from its Zod schema and appends it after the stage prompt's untrusted data.
-6. `generateText` receives `Output.object({ schema })`; the adapter requests `response_format.type = json_object` while the prompt supplies exact property names and structure.
+6. `generateText` receives `Output.json()` so the adapter requests `response_format.type = json_object` without advertising an unreliable native schema, while the prompt supplies exact property names and structure.
 7. Kimi performs a bounded non-thinking JSON generation.
-8. AI SDK parses the JSON and Zod validates it. Source-evaluation wrappers are unwrapped before the existing one-per-source integrity validation.
+8. AI SDK parses JSON syntax and the shared helper applies the Zod schema. Source-evaluation wrappers are unwrapped before the existing one-per-source integrity validation.
 9. The application retains one repair attempt for genuinely malformed or incompatible output, reusing the same JSON contract.
 
 ## Error Handling
