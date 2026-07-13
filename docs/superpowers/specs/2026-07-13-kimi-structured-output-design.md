@@ -10,23 +10,27 @@ The research model uses AI SDK `Output.object` with Zod schemas, but the Kimi Op
 
 Kimi's Chat Completions API documents `response_format: { "type": "json_schema" }` for Structured Output, including a `json_schema` payload. The provider can therefore advertise this capability to the AI SDK.
 
+A live request with Structured Output enabled removed the adapter warning but still exceeded the operation deadline before planning completed. Kimi's model documentation explains the remaining behavior: `kimi-k2.6` enables thinking by default, while this application uses independent one-shot structured generations and does not consume or preserve `reasoning_content`. The provider-specific `thinking: { "type": "disabled" }` request field is therefore required for these bounded generations.
+
 ## Architecture
 
 Provider selection, model capabilities, and provider-specific protocol behavior have separate responsibilities:
 
 - `ProviderName` selects a provider and its credentials, base URL, and default model.
-- A typed model capability registry records behavior verified for a specific provider and model combination. The initial capability is `structuredOutputs`.
-- Optional provider strategy hooks are reserved for protocol differences that cannot be expressed as capabilities, such as request-body transformation or assistant metadata replay. This change does not add a strategy implementation.
+- A typed model capability registry records behavior verified for a specific provider and model combination. The initial capabilities are `structuredOutputs` and `thinkingMode`.
+- A small Kimi request transformer maps the registered `thinkingMode` capability to Kimi's provider-specific request body. It does not parse responses or duplicate AI SDK's Structured Output conversion.
+- Additional provider strategy hooks remain reserved for protocol differences such as assistant metadata replay.
 
-Capabilities are model-specific rather than provider-wide. A known `kimi:kimi-k2.6` entry enables structured output. Unknown or overridden models use conservative defaults unless their capabilities are explicitly registered. DeepSeek remains unchanged and does not inherit Kimi capabilities.
+Capabilities are model-specific rather than provider-wide. A known `kimi:kimi-k2.6` entry enables structured output and sets `thinkingMode: "disabled"` for bounded structured generations. Unknown or overridden models use `structuredOutputs: false` and `thinkingMode: "enabled"`; the transformer only injects an override for `"disabled"`, so conservative models retain their provider default. DeepSeek remains unchanged and does not inherit Kimi capabilities.
 
 The registry configures the existing AI SDK adapter; it does not implement a custom JSON converter or duplicate AI SDK request and response handling.
 
 ## Scope
 
 - Add a typed model capability registry with conservative defaults.
-- Register native structured output support for `kimi:kimi-k2.6`.
+- Register native structured output support and disabled thinking mode for `kimi:kimi-k2.6`.
 - Derive `supportsStructuredOutputs` for the Kimi OpenAI-compatible adapter from the selected model's registered capabilities.
+- Add a Kimi request transformer that injects `thinking: { "type": "disabled" }` only when the selected model capability requires it.
 - Keep the DeepSeek configuration unchanged until it is independently verified.
 - Keep the 120-second per-operation timeout and the existing one-repair policy unchanged.
 - Keep the research workflow, event protocol, prompts, and Zod schemas unchanged.
@@ -35,11 +39,12 @@ The registry configures the existing AI SDK adapter; it does not implement a cus
 
 1. `getResearchModel()` resolves the selected provider and model ID.
 2. The capability registry resolves the exact provider-model pair, falling back conservatively for unknown models.
-3. The Kimi OpenAI-compatible provider receives the resolved `supportsStructuredOutputs` value.
-4. `generateText` receives `Output.object({ schema })` as it does today.
-5. For registered `kimi-k2.6`, the adapter serializes the schema as Kimi's `response_format.type = json_schema` request instead of falling back to `json_object`.
-6. Kimi constrains the response to the requested schema.
-7. The application still performs its final Zod parse and retains one repair attempt for genuinely malformed or incompatible output.
+3. The Kimi OpenAI-compatible provider receives the resolved `supportsStructuredOutputs` value and a request transformer.
+4. For registered `kimi-k2.6`, the transformer preserves the AI SDK request body and adds `thinking: { "type": "disabled" }`.
+5. `generateText` receives `Output.object({ schema })` as it does today.
+6. For registered `kimi-k2.6`, the adapter serializes the schema as Kimi's `response_format.type = json_schema` request instead of falling back to `json_object`.
+7. Kimi performs a bounded non-thinking generation constrained to the requested schema.
+8. The application still performs its final Zod parse and retains one repair attempt for genuinely malformed or incompatible output.
 
 ## Error Handling
 
@@ -48,6 +53,7 @@ Provider, authentication, rate-limit, cancellation, and timeout failures remain 
 ## Testing and Verification
 
 - Add capability tests for the registered Kimi model and conservative unknown-model fallback.
+- Add transformer tests proving disabled thinking is injected without mutating or dropping existing request fields, while conservative models remain unchanged.
 - Add a provider unit test asserting that default `kimi-k2.6` enables `supportsStructuredOutputs`.
 - Assert that an unregistered Kimi model does not automatically enable the capability.
 - Assert that DeepSeek remains unchanged.
@@ -61,4 +67,5 @@ Provider, authentication, rate-limit, cancellation, and timeout failures remain 
 - Increasing operation or route timeouts.
 - Removing the repair path.
 - Replacing AI SDK structured generation with tool calls or custom JSON parsing.
-- Implementing provider strategy hooks before a verified protocol difference requires them.
+- Enabling thinking for the current one-shot structured research stages.
+- Adding response parsing or reasoning replay to the Kimi request transformer.
