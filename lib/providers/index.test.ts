@@ -41,6 +41,7 @@ describe("research provider selection", () => {
       name: "kimi",
       apiKey: "kimi-key",
       baseURL: "https://api.moonshot.cn/v1",
+      supportsStructuredOutputs: true,
     });
     expect(provider).toHaveBeenCalledWith("kimi-k2.6");
   });
@@ -70,18 +71,30 @@ describe("research provider selection", () => {
       apiKeyName: "MOONSHOT_API_KEY",
       baseUrlName: "KIMI_BASE_URL",
       modelName: "KIMI_MODEL",
+      expectedProviderOptions: {
+        name: "kimi",
+        apiKey: "override-key",
+        baseURL: "https://override.example/v1",
+        supportsStructuredOutputs: false,
+      },
     },
     {
       providerName: "deepseek",
       apiKeyName: "DEEPSEEK_API_KEY",
       baseUrlName: "DEEPSEEK_BASE_URL",
       modelName: "DEEPSEEK_MODEL",
+      expectedProviderOptions: {
+        name: "deepseek",
+        apiKey: "override-key",
+        baseURL: "https://override.example/v1",
+      },
     },
   ])("honors $providerName environment overrides", async ({
     providerName,
     apiKeyName,
     baseUrlName,
     modelName,
+    expectedProviderOptions,
   }) => {
     process.env.AI_PROVIDER = providerName;
     process.env[apiKeyName] = "override-key";
@@ -94,11 +107,7 @@ describe("research provider selection", () => {
     const { getResearchModel } = await import("./index");
 
     expect(getResearchModel()).toBe(model);
-    expect(createOpenAICompatible).toHaveBeenCalledWith({
-      name: providerName,
-      apiKey: "override-key",
-      baseURL: "https://override.example/v1",
-    });
+    expect(createOpenAICompatible).toHaveBeenCalledWith(expectedProviderOptions);
     expect(provider).toHaveBeenCalledWith("override-model");
   });
 

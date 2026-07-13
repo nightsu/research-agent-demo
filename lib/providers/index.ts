@@ -1,6 +1,9 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 
-import type { ProviderName } from "./model-capabilities";
+import {
+  getModelCapabilities,
+  type ProviderName,
+} from "./model-capabilities";
 
 export type { ProviderName };
 
@@ -32,13 +35,16 @@ export function getResearchModel() {
   const providerName = getProviderName();
 
   if (providerName === "kimi") {
+    const modelId = process.env.KIMI_MODEL ?? "kimi-k2.6";
+    const capabilities = getModelCapabilities("kimi", modelId);
     const provider = createOpenAICompatible({
       name: "kimi",
       apiKey: requireApiKey("kimi", "MOONSHOT_API_KEY"),
       baseURL: process.env.KIMI_BASE_URL ?? "https://api.moonshot.cn/v1",
+      supportsStructuredOutputs: capabilities.structuredOutputs,
     });
 
-    return provider(process.env.KIMI_MODEL ?? "kimi-k2.6");
+    return provider(modelId);
   }
 
   // This explicit workflow uses separate structured generations, so it does not
