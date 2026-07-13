@@ -108,7 +108,7 @@ flowchart LR
 
 AI SDK 的 `ToolLoopAgent` 适合让模型在停止条件内自主选择并调用工具：样板代码少、扩展新工具快，适合开放式任务。代价是运行路径更不确定，想稳定展示每个教学阶段、为每一阶段建模并精确测试会更难。
 
-本项目用 `generateText` + `Output.object` 与普通 TypeScript 循环显式编排。它代码更多，但搜索、抽取、评估、缺口和综合都有固定边界，便于：
+本项目用 `generateText` + `Output.json()` 请求 JSON 语法，在 prompt 中追加由 Zod 派生的 JSON Schema 合约，并用本地 Zod 解析强制最终 shape，同时以普通 TypeScript 循环显式编排。它代码更多，但搜索、抽取、评估、缺口和综合都有固定边界，便于：
 
 - 发出稳定的 UI 事件；
 - 对状态迁移与调用预算做确定性测试；
