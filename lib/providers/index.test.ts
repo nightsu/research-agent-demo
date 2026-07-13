@@ -42,6 +42,15 @@ describe("research provider selection", () => {
       apiKey: "kimi-key",
       baseURL: "https://api.moonshot.cn/v1",
       supportsStructuredOutputs: true,
+      transformRequestBody: expect.any(Function),
+    });
+    const transformRequestBody = createOpenAICompatible.mock.calls[0][0]
+      .transformRequestBody as (
+      requestBody: Record<string, unknown>,
+    ) => Record<string, unknown>;
+    expect(transformRequestBody({ messages: [] })).toEqual({
+      messages: [],
+      thinking: { type: "disabled" },
     });
     expect(provider).toHaveBeenCalledWith("kimi-k2.6");
   });
@@ -76,6 +85,7 @@ describe("research provider selection", () => {
         apiKey: "override-key",
         baseURL: "https://override.example/v1",
         supportsStructuredOutputs: false,
+        transformRequestBody: expect.any(Function),
       },
     },
     {
@@ -108,6 +118,15 @@ describe("research provider selection", () => {
 
     expect(getResearchModel()).toBe(model);
     expect(createOpenAICompatible).toHaveBeenCalledWith(expectedProviderOptions);
+    if (providerName === "kimi") {
+      const transformRequestBody = createOpenAICompatible.mock.calls[0][0]
+        .transformRequestBody as (
+        requestBody: Record<string, unknown>,
+      ) => Record<string, unknown>;
+      const requestBody = { messages: [] };
+
+      expect(transformRequestBody(requestBody)).toBe(requestBody);
+    }
     expect(provider).toHaveBeenCalledWith("override-model");
   });
 

@@ -4,6 +4,7 @@ import {
   getModelCapabilities,
   type ProviderName,
 } from "./model-capabilities";
+import { createKimiRequestTransformer } from "./kimi-request-transformer";
 
 export type { ProviderName };
 
@@ -42,6 +43,7 @@ export function getResearchModel() {
       apiKey: requireApiKey("kimi", "MOONSHOT_API_KEY"),
       baseURL: process.env.KIMI_BASE_URL ?? "https://api.moonshot.cn/v1",
       supportsStructuredOutputs: capabilities.structuredOutputs,
+      transformRequestBody: createKimiRequestTransformer(capabilities),
     });
 
     return provider(modelId);
