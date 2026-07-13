@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Route `kimi-k2.6` structured generations through Kimi's native JSON Schema response format without changing DeepSeek or timeout behavior.
+**Goal:** Route `kimi-k2.6` structured generations through native JSON Schema with default thinking disabled, without changing DeepSeek or timeout behavior.
 
-**Architecture:** Add a small typed registry keyed by provider and model ID, with conservative defaults for unknown models. The Kimi provider reads the registry and passes the resolved `structuredOutputs` capability into the existing OpenAI-compatible adapter; protocol conversion remains owned by AI SDK.
+**Architecture:** Add a small typed registry keyed by provider and model ID, with conservative defaults for unknown models. The Kimi provider passes the resolved Structured Output capability into the existing OpenAI-compatible adapter and uses a focused request transformer to inject Kimi's verified non-thinking setting; JSON Schema conversion remains owned by AI SDK.
 
 **Tech Stack:** TypeScript, Next.js 16.2, AI SDK 6, `@ai-sdk/openai-compatible`, Vitest, Zod
 
@@ -14,6 +14,8 @@
 
 - Create `lib/providers/model-capabilities.ts`: define provider/model capability types, the verified registry, and conservative lookup.
 - Create `lib/providers/model-capabilities.test.ts`: verify known-model and unknown-model behavior independently from environment/provider creation.
+- Create `lib/providers/kimi-request-transformer.ts`: map verified Kimi thinking capabilities to a provider-specific request body without mutating input.
+- Create `lib/providers/kimi-request-transformer.test.ts`: verify disabled-thinking injection and conservative pass-through behavior.
 - Modify `lib/providers/index.ts`: resolve the Kimi model once and pass its registered structured-output capability to AI SDK.
 - Modify `lib/providers/index.test.ts`: lock down default Kimi, overridden Kimi, and unchanged DeepSeek adapter configuration.
 - Modify `docs/architecture.md`: document the model-specific capability boundary and conservative fallback.
@@ -245,7 +247,244 @@ git diff --cached --check
 git commit -m "fix: enable Kimi structured output"
 ```
 
-### Task 3: Document and verify the completed integration
+### Task 3: Disable Kimi thinking for bounded structured generations
+
+**Files:**
+- Modify: `lib/providers/model-capabilities.ts`
+- Modify: `lib/providers/model-capabilities.test.ts`
+- Create: `lib/providers/kimi-request-transformer.ts`
+- Create: `lib/providers/kimi-request-transformer.test.ts`
+- Modify: `lib/providers/index.ts`
+- Modify: `lib/providers/index.test.ts`
+
+- [ ] **Step 1: Extend the capability tests first**
+
+Update the expected capability objects in `lib/providers/model-capabilities.test.ts`:
+
+```ts
+expect(getModelCapabilities("kimi", "kimi-k2.6")).toEqual({
+  structuredOutputs: true,
+  thinkingMode: "disabled",
+});
+
+expect(getModelCapabilities(providerName, modelId)).toEqual({
+  structuredOutputs: false,
+  thinkingMode: "enabled",
+});
+```
+
+Keep the existing unknown Kimi, DeepSeek, and cross-provider `deepseek:kimi-k2.6` cases.
+
+- [ ] **Step 2: Run the capability tests to verify they fail**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts
+```
+
+Expected: FAIL because `thinkingMode` is absent from the returned objects.
+
+- [ ] **Step 3: Add the thinking capability**
+
+Update `lib/providers/model-capabilities.ts`:
+
+```ts
+export type ProviderName = "kimi" | "deepseek";
+export type ThinkingMode = "enabled" | "disabled";
+
+export type ModelCapabilities = Readonly<{
+  structuredOutputs: boolean;
+  thinkingMode: ThinkingMode;
+}>;
+
+type ModelKey = `${ProviderName}:${string}`;
+
+const CONSERVATIVE_DEFAULT: ModelCapabilities = {
+  structuredOutputs: false,
+  thinkingMode: "enabled",
+};
+
+const MODEL_CAPABILITIES: Readonly<
+  Partial<Record<ModelKey, ModelCapabilities>>
+> = {
+  "kimi:kimi-k2.6": {
+    structuredOutputs: true,
+    thinkingMode: "disabled",
+  },
+};
+
+export function getModelCapabilities(
+  providerName: ProviderName,
+  modelId: string,
+): ModelCapabilities {
+  return MODEL_CAPABILITIES[`${providerName}:${modelId}`] ?? CONSERVATIVE_DEFAULT;
+}
+```
+
+- [ ] **Step 4: Run the capability tests to verify they pass**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts
+```
+
+Expected: the focused capability test file passes.
+
+- [ ] **Step 5: Write failing Kimi request-transformer tests**
+
+Create `lib/providers/kimi-request-transformer.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+
+import { createKimiRequestTransformer } from "./kimi-request-transformer";
+
+describe("Kimi request transformer", () => {
+  it("injects disabled thinking without mutating the AI SDK request body", () => {
+    const requestBody = {
+      model: "kimi-k2.6",
+      messages: [{ role: "user", content: "Return a plan" }],
+      response_format: { type: "json_schema" },
+    };
+    const transform = createKimiRequestTransformer({
+      structuredOutputs: true,
+      thinkingMode: "disabled",
+    });
+
+    expect(transform(requestBody)).toEqual({
+      ...requestBody,
+      thinking: { type: "disabled" },
+    });
+    expect(requestBody).not.toHaveProperty("thinking");
+  });
+
+  it("preserves the provider request for conservative models", () => {
+    const requestBody = { model: "custom-model", messages: [] };
+    const transform = createKimiRequestTransformer({
+      structuredOutputs: false,
+      thinkingMode: "enabled",
+    });
+
+    expect(transform(requestBody)).toBe(requestBody);
+  });
+});
+```
+
+- [ ] **Step 6: Run the transformer tests to verify they fail**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/kimi-request-transformer.test.ts
+```
+
+Expected: FAIL because `./kimi-request-transformer` does not exist.
+
+- [ ] **Step 7: Implement the minimal Kimi request transformer**
+
+Create `lib/providers/kimi-request-transformer.ts`:
+
+```ts
+import type { ModelCapabilities } from "./model-capabilities";
+
+export function createKimiRequestTransformer(
+  capabilities: ModelCapabilities,
+) {
+  return (requestBody: Record<string, unknown>): Record<string, unknown> => {
+    if (capabilities.thinkingMode !== "disabled") return requestBody;
+
+    return {
+      ...requestBody,
+      thinking: { type: "disabled" },
+    };
+  };
+}
+```
+
+- [ ] **Step 8: Run capability and transformer tests**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts lib/providers/kimi-request-transformer.test.ts
+```
+
+Expected: both focused test files pass.
+
+- [ ] **Step 9: Add failing provider wiring assertions**
+
+In `lib/providers/index.test.ts`, add `transformRequestBody: expect.any(Function)` to both Kimi adapter expectations. After default Kimi creation, verify the captured transformer:
+
+```ts
+const defaultKimiOptions = createOpenAICompatible.mock.calls[0][0];
+expect(defaultKimiOptions.transformRequestBody?.({ model: "kimi-k2.6" })).toEqual({
+  model: "kimi-k2.6",
+  thinking: { type: "disabled" },
+});
+```
+
+For the overridden unknown Kimi case, invoke the captured transformer with a stable object and assert reference identity:
+
+```ts
+const providerOptions = createOpenAICompatible.mock.calls[0][0];
+if (providerName === "kimi") {
+  const requestBody = { model: "override-model" };
+  expect(providerOptions.transformRequestBody?.(requestBody)).toBe(requestBody);
+}
+```
+
+Keep the DeepSeek expectation exact and without `transformRequestBody`.
+
+- [ ] **Step 10: Run provider tests to verify they fail**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/index.test.ts
+```
+
+Expected: FAIL because Kimi provider creation does not yet include a transformer.
+
+- [ ] **Step 11: Wire the transformer into Kimi provider creation**
+
+Import the transformer in `lib/providers/index.ts`:
+
+```ts
+import { createKimiRequestTransformer } from "./kimi-request-transformer";
+```
+
+Add the transformer to the existing Kimi `createOpenAICompatible` settings:
+
+```ts
+transformRequestBody: createKimiRequestTransformer(capabilities),
+```
+
+Do not add the transformer or thinking capability lookup to DeepSeek.
+
+- [ ] **Step 12: Run focused and static verification**
+
+Run:
+
+```bash
+npm test -- --run lib/providers/model-capabilities.test.ts lib/providers/kimi-request-transformer.test.ts lib/providers/index.test.ts lib/providers/research-model.test.ts
+npm run typecheck
+npm run lint
+git diff --check
+```
+
+Expected: all focused tests, typecheck, lint, and whitespace validation pass.
+
+- [ ] **Step 13: Commit the thinking override**
+
+```bash
+git add lib/providers/model-capabilities.ts lib/providers/model-capabilities.test.ts lib/providers/kimi-request-transformer.ts lib/providers/kimi-request-transformer.test.ts lib/providers/index.ts lib/providers/index.test.ts
+git diff --cached --check
+git commit -m "fix: disable Kimi thinking for structured research"
+```
+
+### Task 4: Document and verify the completed integration
 
 **Files:**
 - Modify: `docs/architecture.md:162-166`
@@ -255,7 +494,7 @@ git commit -m "fix: enable Kimi structured output"
 Replace the first provider-boundary paragraph with:
 
 ```markdown
-`ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModel()` 按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model；模型能力注册表按 `provider:model` 保存已经验证的协议能力，未知模型采用保守默认值。当前只有 `kimi:k2.6` 注册原生 Structured Output，DeepSeek 配置保持不变。只有无法由能力标记表达的协议差异才应引入 provider strategy，避免重复 AI SDK 已有的请求和响应转换。
+`ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModel()` 按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model；模型能力注册表按 `provider:model` 保存已经验证的协议能力，未知模型采用保守默认值。当前 `kimi:k2.6` 注册原生 Structured Output，并通过 Kimi request transformer 为这些独立的结构化生成禁用默认 thinking；DeepSeek 配置保持不变。只有无法由能力标记表达的协议差异才应扩展 provider strategy，避免重复 AI SDK 已有的请求和响应转换。
 ```
 
 - [ ] **Step 2: Run all static and automated verification**
