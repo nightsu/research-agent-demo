@@ -6,7 +6,7 @@ Make `kimi-k2.6` planning and research generations use Prompted JSON Object: dis
 
 ## Root Cause
 
-The research model uses AI SDK `Output.object` with Zod schemas, but the Kimi OpenAI-compatible provider does not declare `supportsStructuredOutputs`. The adapter therefore warns that schema-backed `responseFormat` is unsupported and falls back to `json_object`. JSON mode guarantees valid JSON but does not enforce the application schema, so a schema mismatch can trigger a second repair generation. Both generations currently run inside one research operation deadline.
+Before this change, the research model used AI SDK `Output.object` with Zod schemas, but the Kimi OpenAI-compatible provider did not declare `supportsStructuredOutputs`. The adapter therefore warned that schema-backed `responseFormat` was unsupported and fell back to `json_object`. JSON mode guaranteed valid JSON but did not enforce the application schema, so a schema mismatch could trigger a second repair generation. Both generations ran inside one research operation deadline.
 
 Kimi's Chat Completions API advertises `response_format: { "type": "json_schema" }` for Structured Output, including a `json_schema` payload, but controlled live evidence in this integration showed that capability to be unreliable. The provider must therefore not advertise it to the AI SDK.
 
