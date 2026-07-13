@@ -2,13 +2,13 @@
 
 ## Goal
 
-Make `kimi-k2.6` planning and research generations use Kimi's native JSON Schema structured output so valid provider responses do not unnecessarily enter the repair path and consume the shared operation deadline.
+Make `kimi-k2.6` planning and research generations use Prompted JSON Object: disable default thinking, request JSON Object syntax, append an exact Zod-derived JSON contract after untrusted data, and retain local Zod validation as the final application boundary.
 
 ## Root Cause
 
 The research model uses AI SDK `Output.object` with Zod schemas, but the Kimi OpenAI-compatible provider does not declare `supportsStructuredOutputs`. The adapter therefore warns that schema-backed `responseFormat` is unsupported and falls back to `json_object`. JSON mode guarantees valid JSON but does not enforce the application schema, so a schema mismatch can trigger a second repair generation. Both generations currently run inside one research operation deadline.
 
-Kimi's Chat Completions API documents `response_format: { "type": "json_schema" }` for Structured Output, including a `json_schema` payload. The provider can therefore advertise this capability to the AI SDK.
+Kimi's Chat Completions API advertises `response_format: { "type": "json_schema" }` for Structured Output, including a `json_schema` payload, but controlled live evidence in this integration showed that capability to be unreliable. The provider must therefore not advertise it to the AI SDK.
 
 A live request with Structured Output enabled removed the adapter warning but still exceeded the operation deadline before planning completed. Kimi's model documentation explains that `kimi-k2.6` enables thinking by default, while this application uses independent one-shot structured generations and does not consume or preserve `reasoning_content`. The provider-specific `thinking: { "type": "disabled" }` request field is therefore required for these bounded generations.
 
