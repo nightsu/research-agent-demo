@@ -6,10 +6,11 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
 function ruleBody(selector: string, source = styles) {
+  const uncommentedSource = source.replace(/\/\*[\s\S]*?\*\//g, "");
   const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
   let match: RegExpExecArray | null;
 
-  while ((match = rulePattern.exec(source)) !== null) {
+  while ((match = rulePattern.exec(uncommentedSource)) !== null) {
     const selectors = match[1].split(",").map((entry) => entry.trim());
     if (selectors.includes(selector)) return match[2];
   }
@@ -47,5 +48,27 @@ describe("desktop research workspace layout", () => {
     expect(ruleBody(".research-report > .eyebrow", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
     expect(ruleBody(".research-report > h2", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
     expect(ruleBody(".research-report > section", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+  });
+
+  it("leaves nested document regions vertically unbounded", () => {
+    const printerViewport = ruleBody(".printer-viewport");
+    const eventPre = ruleBody(".event-card pre");
+
+    expect(printerViewport).not.toMatch(/max-height\s*:/);
+    expect(printerViewport).toMatch(/overflow-y:\s*visible;/);
+    expect(printerViewport).not.toMatch(/overscroll-behavior\s*:/);
+    expect(eventPre).not.toMatch(/max-height\s*:/);
+    expect(eventPre).toMatch(/overflow:\s*visible;/);
+    expect(eventPre).not.toMatch(/overflow-x:\s*auto;/);
+    expect(eventPre).not.toMatch(/overflow-y:\s*auto;/);
+  });
+
+  it("ignores declarations inside CSS comments", () => {
+    const commentedStyles = `.example {
+      /* overflow: visible; */
+      color: black;
+    }`;
+
+    expect(ruleBody(".example", commentedStyles)).not.toMatch(/overflow:\s*visible;/);
   });
 });

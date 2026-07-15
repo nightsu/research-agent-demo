@@ -164,11 +164,24 @@ textarea::placeholder { color: #8a918e; }
 .event-card .event-meta { color: var(--blue); }
 .event-card details { margin-top: 11px; border-top: 1px solid #ebe8df; padding-top: 9px; }
 .event-card summary { color: var(--ink-muted); font-size: 0.72rem; font-weight: 700; cursor: pointer; }
-.event-card pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #eef0ec; color: #28332f; font: 0.68rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-card pre {
+  overflow: visible;
+  padding: 12px;
+  border-radius: 8px;
+  background: #eef0ec;
+  color: #28332f;
+  font: 0.68rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .empty-note { padding: 28px 0 10px; color: var(--ink-muted); text-align: center; }
 
 .printer-shell { position: relative; min-height: 0; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-.printer-viewport { max-height: min(66vh, 720px); overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; }
+/* 右侧工作区统一负责纵向滚动，内部文档流不再创建嵌套滚动区域。 */
+.printer-viewport {
+  overflow-x: visible;
+  overflow-y: visible;
+}
 .printer-list { display: grid; gap: 12px; margin: 24px 0 0; padding: 0; list-style: none; }
 .printer-record[data-latest="true"] { animation: printer-feed 650ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 .printer-record article { padding: 16px 18px; border: 1px solid #e2ded4; border-left: 3px solid var(--teal); border-radius: 13px; background: #fffefa; }
