@@ -1,44 +1,16 @@
-"use client";
-
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
-
 import type { PrinterRecord } from "./research-printer-model";
-
-const BOTTOM_THRESHOLD_PX = 48;
 
 export function ResearchPrinter({ records, onSourceSelect }: {
   records: PrinterRecord[];
   onSourceSelect(sourceId: string): void;
 }) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const [followingLatest, setFollowingLatest] = useState(true);
-
-  const scrollToLatest = useCallback((behavior: ScrollBehavior) => {
-    const viewport = viewportRef.current;
-    viewport?.scrollTo?.({ top: viewport.scrollHeight, behavior });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (followingLatest) scrollToLatest("smooth");
-  }, [followingLatest, records.length, scrollToLatest]);
-
   return (
     <section className="printer-shell" aria-labelledby="printer-title">
       <header className="section-heading">
         <div><p className="eyebrow">Live record</p><h2 id="printer-title">How the research unfolded</h2></div>
         <span className="event-count">{records.length} records</span>
       </header>
-      <div
-        ref={viewportRef}
-        className="printer-viewport"
-        role="region"
-        aria-label="Research process"
-        onScroll={(event) => {
-          const node = event.currentTarget;
-          // 用户离开底部是在阅读历史；新事件不能强行夺走其滚动位置。
-          setFollowingLatest(node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX);
-        }}
-      >
+      <div className="printer-viewport" role="region" aria-label="Research process">
         {records.length === 0 ? <p className="empty-note">Research records will appear here.</p> : (
           <ol className="printer-list">
             {records.map((record, index) => (
@@ -52,11 +24,6 @@ export function ResearchPrinter({ records, onSourceSelect }: {
           </ol>
         )}
       </div>
-      {!followingLatest ? (
-        <button className="latest-button" type="button" onClick={() => { setFollowingLatest(true); scrollToLatest("smooth"); }}>
-          Back to latest progress
-        </button>
-      ) : null}
     </section>
   );
 }

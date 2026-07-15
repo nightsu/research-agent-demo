@@ -32,21 +32,26 @@ describe("ResearchPrinter", () => {
     expect(onSourceSelect).toHaveBeenCalledWith("s1");
   });
 
-  it("pauses following when the reader leaves the bottom and resumes on request", () => {
+  it("does not own scrolling or render an internal follow control", () => {
     const { rerender } = render(<ResearchPrinter records={records} onSourceSelect={vi.fn()} />);
     const viewport = screen.getByRole("region", { name: /research process/i });
+    const scrollTo = vi.fn();
     Object.defineProperties(viewport, {
       scrollHeight: { configurable: true, value: 1000 },
       clientHeight: { configurable: true, value: 300 },
-      scrollTop: { configurable: true, writable: true, value: 200 },
-      scrollTo: { configurable: true, value: vi.fn() },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+      scrollTo: { configurable: true, value: scrollTo },
     });
+
+    rerender(<ResearchPrinter records={[
+      ...records,
+      { id: "c2", kind: "conclusion", summary: "Converging" },
+    ]} onSourceSelect={vi.fn()} />);
+
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(100);
     fireEvent.scroll(viewport);
-    expect(screen.getByRole("button", { name: /back to latest progress/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /back to latest progress/i }));
     expect(screen.queryByRole("button", { name: /back to latest progress/i })).not.toBeInTheDocument();
-    rerender(<ResearchPrinter records={[...records, { id: "c2", kind: "conclusion", summary: "Converging" }]} onSourceSelect={vi.fn()} />);
-    expect(viewport.scrollTo).toHaveBeenCalled();
   });
 
   it("marks only the newest record as the sheet currently being printed", () => {
