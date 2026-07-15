@@ -89,6 +89,17 @@ let mockedRun: {
   error?: string;
 };
 
+function defineWorkspaceScroll(viewport: HTMLElement, scrollTop = 690) {
+  const scrollTo = vi.fn();
+  Object.defineProperties(viewport, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 300 },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+    scrollTo: { configurable: true, value: scrollTo },
+  });
+  return scrollTo;
+}
+
 vi.mock("./use-research-stream", () => ({
   useResearchStream: () => ({ run: mockedRun, start, cancel, reset, retry, canRetry: true }),
 }));
@@ -362,6 +373,82 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByRole("region", { name: /research process/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /retry research/i }));
     expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("pauses workspace following while the reader reviews earlier records", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, 4) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 200);
+    fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: /back to latest progress/i })).toBeInTheDocument();
+    scrollTo.mockClear();
+
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, 4),
+        { type: "conclusion.updated", summary: "New evidence" },
+      ],
+    };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest progress/i }));
+    expect(scrollTo).toHaveBeenCalledOnce();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("follows new records when the workspace remains near the bottom", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, 4) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 690);
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, 4),
+        { type: "conclusion.updated", summary: "New evidence" },
+      ],
+    };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("follows event growth when the latest printer record is updated in place", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, 3) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 690);
+    expect(screen.getByText("2 records")).toBeInTheDocument();
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = { status: "running", events: completedEvents.slice(0, 4) };
+    rerender(<ResearchWorkbench />);
+    expect(screen.getByText("2 records")).toBeInTheDocument();
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("positions a newly completed report at the workspace top", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, -1) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = { status: "completed", events: completedEvents };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    scrollTo.mockClear();
+
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /back to latest progress/i })).not.toBeInTheDocument();
   });
 });
 
