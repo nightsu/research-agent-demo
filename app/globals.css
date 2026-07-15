@@ -146,6 +146,22 @@ textarea::placeholder { color: #8a918e; }
 .event-card pre { max-height: 260px; overflow: auto; padding: 12px; border-radius: 8px; background: #eef0ec; color: #28332f; font: 0.68rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty-note { padding: 28px 0 10px; color: var(--ink-muted); text-align: center; }
 
+.printer-shell { position: relative; min-height: 0; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.printer-viewport { max-height: min(66vh, 720px); overflow-y: auto; overscroll-behavior: contain; scroll-behavior: smooth; }
+.printer-list { display: grid; gap: 12px; margin: 24px 0 0; padding: 0; list-style: none; }
+.printer-record { animation: printer-enter 200ms ease-out both; }
+.printer-record article { padding: 16px 18px; border: 1px solid #e2ded4; border-left: 3px solid var(--teal); border-radius: 13px; background: #fffefa; }
+.printer-record h3 { margin: 0 0 5px; overflow-wrap: anywhere; font-size: 0.94rem; }
+.printer-record p:not(.event-label) { margin: 4px 0; color: var(--ink-muted); font-size: 0.82rem; }
+.printer-record details { margin-top: 11px; padding-top: 9px; border-top: 1px solid #ebe8df; }
+.printer-record summary { color: var(--ink-muted); font-size: 0.74rem; font-weight: 750; cursor: pointer; }
+.printer-source-list { display: grid; gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.printer-source-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.printer-source-list button { padding: 0; border: 0; background: transparent; color: var(--blue); font-weight: 750; text-align: left; }
+.printer-source-list span { color: var(--ink-muted); font-size: 0.7rem; text-transform: capitalize; }
+.latest-button { position: absolute; right: 42px; bottom: 42px; min-height: 38px; padding: 0 15px; border: 1px solid var(--teal); border-radius: 999px; background: var(--teal); color: #fff; font-weight: 750; box-shadow: var(--shadow); }
+@keyframes printer-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
 .research-report { max-width: 80ch; margin-right: auto; margin-left: auto; padding: clamp(26px, 5vw, 52px); }
 .research-report > h2 { margin: 7px 0 34px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 5vw, 3.35rem); font-weight: 500; line-height: 1.05; }
 .research-report section { margin-top: 30px; }
