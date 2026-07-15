@@ -48,4 +48,16 @@ describe("ResearchPrinter", () => {
     rerender(<ResearchPrinter records={[...records, { id: "c2", kind: "conclusion", summary: "Converging" }]} onSourceSelect={vi.fn()} />);
     expect(viewport.scrollTo).toHaveBeenCalled();
   });
+
+  it("marks only the newest record as the sheet currently being printed", () => {
+    const { container } = render(<ResearchPrinter records={[
+      ...records,
+      { id: "c2", kind: "conclusion", summary: "Converging" },
+    ]} onSourceSelect={vi.fn()} />);
+
+    const printedRecords = container.querySelectorAll(".printer-record");
+    const latestRecords = container.querySelectorAll('.printer-record[data-latest="true"]');
+    expect(latestRecords).toHaveLength(1);
+    expect(latestRecords[0]).toBe(printedRecords[printedRecords.length - 1]);
+  });
 });
