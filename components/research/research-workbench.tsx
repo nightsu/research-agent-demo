@@ -20,6 +20,7 @@ export function ResearchWorkbench() {
   const records = useMemo(() => derivePrinterRecords(run.events), [run.events]);
   const statusRef = useRef<HTMLParagraphElement>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const workspaceDocumentRef = useRef<HTMLDivElement>(null);
   const previousStatus = useRef<ResearchRunStatus>(run.status);
   const previousReportFirst = useRef(false);
   const [followingLatest, setFollowingLatest] = useState(true);
@@ -30,19 +31,35 @@ export function ResearchWorkbench() {
   const scrollWorkspace = useCallback((top: number) => {
     workspaceRef.current?.scrollTo?.({ top, behavior: "auto" });
   }, []);
+  const updateFollowingFromScrollPosition = useCallback((viewport = workspaceRef.current) => {
+    if (!viewport) return;
+    setFollowingLatest(
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX,
+    );
+  }, []);
 
   useLayoutEffect(() => {
     const enteredReport = reportFirst && !previousReportFirst.current;
     if (enteredReport) {
       // 完成态会把报告重排到过程记录之前；只在首次进入时把报告标题带回视野。
       scrollWorkspace(0);
-    } else if (active && followingLatest) {
+    } else if (!reportFirst && followingLatest) {
       // 跟随仅负责展示位置，不能参与事件消费或业务阶段推进。
       const viewport = workspaceRef.current;
       if (viewport) scrollWorkspace(viewport.scrollHeight);
     }
     previousReportFirst.current = reportFirst;
   }, [active, followingLatest, reportFirst, run.events.length, scrollWorkspace]);
+
+  useEffect(() => {
+    const workspaceDocument = workspaceDocumentRef.current;
+    if (!workspaceDocument || typeof ResizeObserver === "undefined") return;
+
+    // 展开 details 会改变文档高度，却不会触发滚动事件；观察文档流才能及时暂停错误的“跟随最新”。
+    const observer = new ResizeObserver(() => updateFollowingFromScrollPosition());
+    observer.observe(workspaceDocument);
+    return () => observer.disconnect();
+  }, [run.status, updateFollowingFromScrollPosition]);
 
   useEffect(() => {
     if (previousStatus.current === "running" && run.status === "cancelled") statusRef.current?.focus();
@@ -74,18 +91,17 @@ export function ResearchWorkbench() {
             className="workspace-content"
             role="region"
             aria-label="Research workspace content"
-            onScroll={(event) => {
-              const node = event.currentTarget;
-              setFollowingLatest(node.scrollHeight - node.scrollTop - node.clientHeight <= BOTTOM_THRESHOLD_PX);
-            }}
+            onScroll={(event) => updateFollowingFromScrollPosition(event.currentTarget)}
           >
-            {reportFirst && view.report ? (
-              <>
-                <ResearchReportView report={view.report} sources={view.sources} citationNumbers={view.citationNumbers} onCitation={setSelectedSourceId} />
-                {/* 完成态优先阅读结论，失败态优先诊断过程，所以只有前者自动折叠打印记录。 */}
-                <details className="process-archive"><summary>View research process</summary>{printer}</details>
-              </>
-            ) : printer}
+            <div ref={workspaceDocumentRef}>
+              {reportFirst && view.report ? (
+                <>
+                  <ResearchReportView report={view.report} sources={view.sources} citationNumbers={view.citationNumbers} onCitation={setSelectedSourceId} />
+                  {/* 完成态优先阅读结论，失败态优先诊断过程，所以只有前者自动折叠打印记录。 */}
+                  <details className="process-archive"><summary>View research process</summary>{printer}</details>
+                </>
+              ) : printer}
+            </div>
           </div>
           {!reportFirst && !followingLatest ? (
             <button className="latest-button" type="button" onClick={() => setFollowingLatest(true)}>

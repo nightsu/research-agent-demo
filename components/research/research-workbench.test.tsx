@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ResearchEvent } from "@/lib/agent/research-events";
@@ -431,6 +431,82 @@ describe("ResearchWorkbench", () => {
     rerender(<ResearchWorkbench />);
     expect(screen.getByText("2 records")).toBeInTheDocument();
     expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it.each([
+    {
+      status: "cancelled" as const,
+      terminalEvent: { type: "research.cancelled" } as ResearchEvent,
+    },
+    {
+      status: "failed" as const,
+      terminalEvent: {
+        type: "research.failed",
+        message: "Research failed safely.",
+        recoverable: true,
+      } as ResearchEvent,
+    },
+  ])("follows the terminal record when research becomes $status", ({ status, terminalEvent }) => {
+    const runningEvents = completedEvents.slice(0, 4);
+    mockedRun = { status: "running", events: runningEvents };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 690);
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = { status, events: [...runningEvents, terminalEvent] };
+    rerender(<ResearchWorkbench />);
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("recalculates following when expanded content changes the document height", () => {
+    let notifyResize: ResizeObserverCallback = () => undefined;
+    const observe = vi.fn();
+    const disconnect = vi.fn();
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe = observe;
+      unobserve = vi.fn();
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    mockedRun = { status: "running", events: completedEvents.slice(0, 4) };
+    const { rerender, unmount } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 690);
+    fireEvent.scroll(viewport);
+
+    const planDetails = screen.getByText("Plan details").closest("details");
+    expect(planDetails).not.toBeNull();
+    fireEvent.click(within(planDetails!).getByText("Plan details"));
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 1200 });
+    act(() => notifyResize([], {} as ResizeObserver));
+    expect(screen.getByRole("button", { name: /back to latest progress/i })).toBeInTheDocument();
+
+    scrollTo.mockClear();
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, 4),
+        { type: "conclusion.updated", summary: "New evidence" },
+      ],
+    };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(within(planDetails!).getByText("Plan details"));
+    Object.defineProperty(viewport, "scrollHeight", { configurable: true, value: 1000 });
+    act(() => notifyResize([], {} as ResizeObserver));
+    expect(screen.queryByRole("button", { name: /back to latest progress/i })).not.toBeInTheDocument();
+
+    expect(observe).toHaveBeenCalledOnce();
+    unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 
   it("positions a newly completed report at the workspace top", () => {
