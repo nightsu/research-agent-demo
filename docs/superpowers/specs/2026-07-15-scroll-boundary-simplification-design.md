@@ -22,7 +22,7 @@
 - 右侧 `.workspace-content` 是运行态、失败态和完成态唯一的常驻纵向滚动所有者。
 - `.printer-viewport` 保留语义分组和可访问名称，但取消固定高度、纵向溢出和内部滚动状态。
 - “回到最新进度”属于右侧工作区，不再属于打印流内部视口。
-- 代码块允许横向滚动；纵向内容自然撑开，不再通过固定高度创建第二个纵向阅读区。
+- 代码块使用 `white-space: pre-wrap` 与 `overflow-wrap: anywhere` 主动换行，并以 `overflow: visible` 留在右侧文档流中，不创建横向或纵向子滚动区。
 - 来源抽屉属于临时模态界面，可以独立纵向滚动；关闭后恢复背景滚动位置和触发元素焦点。
 - 不修改服务端 Agent、NDJSON 事件协议、来源评估或报告数据结构。
 
@@ -55,7 +55,7 @@ flowchart TB
         Report["ResearchReportView"]
         Process["完成态折叠过程"]
         Sources["来源入口"]
-        Code["代码或原始数据<br/>仅横向滚动"]
+        Code["代码或原始数据<br/>自动换行，overflow: visible"]
     end
 
     Drawer["SourceDrawer<br/>打开期间独立滚动并锁定背景"]
@@ -132,7 +132,7 @@ stateDiagram-v2
 - `.workspace-grid`：`grid-template-rows: minmax(0, 1fr)` 与 `min-height: 0`；
 - `.progress-panel`、`.workspace-content`：分别使用 `overflow-y: auto`；
 - `.printer-viewport`：`max-height: none`、`overflow-y: visible`，不设置 `overscroll-behavior` 或内部平滑滚动；
-- `.event-card pre`：取消纵向 `max-height`，使用 `overflow-x: auto` 和 `overflow-y: visible`；
+- `.event-card pre`：取消纵向 `max-height`，使用 `overflow: visible`、`white-space: pre-wrap` 与 `overflow-wrap: anywhere`。这里不能组合 `overflow-x: auto` 和 `overflow-y: visible`：CSS 的两个 overflow 轴会相互影响，当一个轴是 `auto` 而另一个轴声明为 `visible` 时，浏览器会把 `visible` 轴的计算值改为 `auto`，从而让代码块重新成为嵌套纵向滚动容器；
 - “回到最新进度”相对右侧工作区固定展示，但不能覆盖报告正文或阻止键盘访问。
 
 ### 7.2 移动端
@@ -168,7 +168,7 @@ stateDiagram-v2
 1. **CSS 契约测试**
    - 左、右两列仍分别拥有纵向滚动；
    - `.printer-viewport` 不再拥有 `max-height` 或纵向 `overflow: auto`；
-   - 代码块不再创建纵向滚动区。
+   - 代码块计算为 `overflow: visible`，通过 `pre-wrap` 与 `overflow-wrap: anywhere` 消化长行，不再创建横向或纵向滚动区。
 2. **工作台交互测试**
    - 位于底部时追加记录会滚到最新位置；
    - 离开底部后追加记录不改变 `scrollTop`；
