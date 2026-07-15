@@ -43,3 +43,6 @@ next-env.d.ts
 
 # local git worktrees
 /.worktrees/
+
+# local brainstorming visual companion
+/.superpowers/
