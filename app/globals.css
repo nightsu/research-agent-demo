@@ -162,6 +162,17 @@ textarea::placeholder { color: #8a918e; }
 .latest-button { position: absolute; right: 42px; bottom: 42px; min-height: 38px; padding: 0 15px; border: 1px solid var(--teal); border-radius: 999px; background: var(--teal); color: #fff; font-weight: 750; box-shadow: var(--shadow); }
 @keyframes printer-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
+.source-drawer-overlay { position: fixed; z-index: 50; inset: 0; display: flex; justify-content: flex-end; background: rgba(23, 35, 33, 0.38); }
+.source-drawer { width: min(520px, 92vw); height: 100%; overflow-y: auto; padding: 30px; background: var(--surface); box-shadow: -18px 0 50px rgba(23, 35, 33, 0.18); animation: drawer-enter 220ms ease-out both; }
+.source-drawer-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+.source-drawer h2 { margin: 8px 0; font-family: Georgia, "Times New Roman", serif; font-size: 2rem; font-weight: 500; line-height: 1.12; }
+.source-drawer > p:not(.eyebrow, .source-domain), .drawer-evaluation p { color: var(--ink-muted); }
+.source-drawer a { display: inline-block; margin-top: 24px; color: var(--blue); font-weight: 800; }
+.drawer-close { width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--ink); font-size: 1.5rem; line-height: 1; }
+.drawer-evaluation { margin-top: 24px; padding: 18px; border-left: 3px solid var(--teal); background: #f8f6ef; }
+.drawer-evaluation h3 { margin: 0; text-transform: capitalize; }
+@keyframes drawer-enter { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: translateX(0); } }
+
 .research-report { max-width: 80ch; margin-right: auto; margin-left: auto; padding: clamp(26px, 5vw, 52px); }
 .research-report > h2 { margin: 7px 0 34px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 5vw, 3.35rem); font-weight: 500; line-height: 1.05; }
 .research-report section { margin-top: 30px; }
