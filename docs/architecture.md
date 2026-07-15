@@ -6,9 +6,12 @@
 
 | 组件 | 主要文件 | 职责 |
 | --- | --- | --- |
-| UI 工作台 | `components/research/research-workbench.tsx` | 发起 / 取消 / 重置研究，组合进度、时间线、报告与来源卡片 |
+| UI 工作台 | `components/research/research-workbench.tsx` | 发起 / 取消 / 重试研究，并按运行终态组合进度、打印流、报告与来源抽屉 |
 | 流客户端 | `components/research/use-research-stream.ts` | POST 请求、任意字节分块解码、事件校验、终态和取消 |
 | UI 投影 | `components/research/research-view-model.ts` | 从事件日志去重来源、关联评估、编号引用并派生展示状态 |
+| 打印投影 | `components/research/research-printer-model.ts` | 把追加事件日志聚合为计划、搜索批次、缺口、结论与综合记录 |
+| 打印视图 | `components/research/research-printer.tsx` | 渲染结构化记录，并管理自动跟随、暂停阅读和来源入口 |
+| 来源抽屉 | `components/research/source-drawer.tsx` | 在不离开报告位置的前提下展示来源、评分和采用理由 |
 | HTTP / NDJSON 实现 | `lib/server/research-route.ts` | `createResearchRoute()` 实现输入校验、NDJSON 背压、请求 / consumer 取消和唯一终态 |
 | Next.js Route 包装 | `app/api/research/route.ts` | 装配生产 model / workflow / Tavily 依赖，只导出 Next.js 允许的 `POST` 与 `maxDuration` |
 | 工作流编排 | `lib/agent/research-agent.ts` | 显式 research loop、预算、超时、重试、状态迁移和公开失败 |
@@ -145,6 +148,23 @@ sequenceDiagram
 - 二者都不包含 provider 私有 chain-of-thought。
 
 客户端的 `deriveResearchViewModel()` 不是第二个业务状态机。它只把事件投影为展示所需的来源去重、评估映射、计数、最后一条 metrics 和引用序号。
+
+## 结构化打印流
+
+`derivePrinterRecords()` 与 `deriveResearchViewModel()` 读取同一份追加事件日志，但职责不同：前者保留研究过程的叙事顺序，后者派生页面当前快照。打印投影是纯函数，因此刷新渲染或回放相同事件会得到相同记录；它不能产生服务端没有公开的新结论。
+
+一次搜索的 `search.started`、`search.completed`、`source.read` 和 `source.evaluated` 会按 query 与稳定 source ID 聚合为一个批次。相同 query 可能在后续轮次再次执行，所以完成事件必须反向匹配最近的未完成批次。无法关联的未知 source ID 不会被补造成来源卡片，原事件仍留在日志中供协议测试诊断。
+
+运行时 `ResearchPrinter` 跟随最新批次；用户离开底部阅读历史后，自动滚动暂停，直到用户自行回到底部或点击恢复按钮。完整或部分报告产生后，工作台把报告提升为主内容并折叠过程；失败和取消没有可替代的最终结论，因此保持过程展开。报告引用和打印流来源统一打开 `SourceDrawer`，关闭后把焦点还给原触发元素。
+
+公开打印记录只包括计划、工具行动原因、来源判断、证据缺口和阶段结论，不包括 provider 私有 chain-of-thought。建议按以下顺序阅读代码：
+
+1. `lib/agent/research-events.ts`：协议允许公开哪些事实；
+2. `components/research/use-research-stream.ts`：字节流如何变成事件日志；
+3. `components/research/research-printer-model.ts`：事件如何聚合成业务记录；
+4. `components/research/research-printer.tsx`：打印和滚动跟随如何实现；
+5. `components/research/research-workbench.tsx`：不同终态如何改变信息层级；
+6. `components/research/source-drawer.tsx`：来源阅读与焦点如何跨区域衔接。
 
 ## 操作预算与修复回调
 

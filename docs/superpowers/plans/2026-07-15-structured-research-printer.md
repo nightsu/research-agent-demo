@@ -37,11 +37,11 @@
 - Create: `components/research/research-printer-model.test.ts`
 - Create: `components/research/research-printer-model.ts`
 
-- [ ] **Step 1: Confirm the Next.js 16 boundary before code changes**
+- [x] **Step 1: Confirm the Next.js 16 boundary before code changes**
 
 Read the two local documents above and record the implementation decision in the code review notes: `ResearchWorkbench` remains the single explicit `"use client"` entry point; printer-model stays pure, and interactive descendants inherit the client module graph.
 
-- [ ] **Step 2: Write failing projection tests**
+- [x] **Step 2: Write failing projection tests**
 
 Create `components/research/research-printer-model.test.ts` with real protocol events and these assertions:
 
@@ -110,13 +110,13 @@ describe("derivePrinterRecords", () => {
 });
 ```
 
-- [ ] **Step 3: Run the focused test and verify RED**
+- [x] **Step 3: Run the focused test and verify RED**
 
 Run: `npm test -- components/research/research-printer-model.test.ts`
 
 Expected: FAIL because `./research-printer-model` does not exist.
 
-- [ ] **Step 4: Implement the discriminated union and pure projection**
+- [x] **Step 4: Implement the discriminated union and pure projection**
 
 Create `components/research/research-printer-model.ts` with exported record types and `derivePrinterRecords(events)`. Use a single ordered pass, stable IDs such as `search-${eventIndex}`, and reverse matching for the most recent incomplete search with the same query. Include Chinese comments at the two non-obvious invariants:
 
@@ -216,13 +216,13 @@ export function derivePrinterRecords(events: ResearchEvent[]): PrinterRecord[] {
 
 The function never serializes the original event or `rawContent` into a record. TypeScript's discriminated switch must remain exhaustive when the protocol gains a new event.
 
-- [ ] **Step 5: Run focused and existing projection tests**
+- [x] **Step 5: Run focused and existing projection tests**
 
 Run: `npm test -- components/research/research-printer-model.test.ts components/research/research-view-model.test.ts`
 
 Expected: both files PASS.
 
-- [ ] **Step 6: Commit the pure model slice**
+- [x] **Step 6: Commit the pure model slice**
 
 ```bash
 git add components/research/research-printer-model.ts components/research/research-printer-model.test.ts
@@ -236,7 +236,7 @@ git commit -m "feat: project research events into printer records"
 - Create: `components/research/research-printer.tsx`
 - Modify: `app/globals.css`
 
-- [ ] **Step 1: Write failing printer interaction tests**
+- [x] **Step 1: Write failing printer interaction tests**
 
 Cover accessible labels, one search card with expandable sources, `onSourceSelect`, and scroll behavior. Define numeric scroll properties on the region so jsdom exercises the real distance calculation:
 
@@ -257,13 +257,13 @@ it("pauses following when the reader leaves the bottom and resumes on request", 
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- components/research/research-printer.test.tsx`
 
 Expected: FAIL because `ResearchPrinter` does not exist.
 
-- [ ] **Step 3: Implement the printer component**
+- [x] **Step 3: Implement the printer component**
 
 Create a client component that receives only serializable record data and an action callback:
 
@@ -316,17 +316,17 @@ export function ResearchPrinter({ records, onSourceSelect }: {
 
 Add `PrinterRecordView` in the same file with an exhaustive `switch (record.kind)`: `plan` renders objective/questions in `<details>`; `search` renders query/reason plus a `<details>` source list whose source titles are buttons; `gap` renders follow-up queries; `conclusion` renders the summary; `synthesis` renders running/complete text; `terminal` renders cancelled/failed text. Every card includes visible text for its status and no raw event JSON.
 
-- [ ] **Step 4: Add minimal printer CSS**
+- [x] **Step 4: Add minimal printer CSS**
 
 Add `.printer-shell`, `.printer-viewport`, `.printer-list`, `.printer-record`, `.printer-record-enter`, `.printer-source-list`, and `.latest-button`. Animate only opacity and transform; extend the existing reduced-motion block so smooth scroll and entry animation are disabled.
 
-- [ ] **Step 5: Run the printer tests and lint the component**
+- [x] **Step 5: Run the printer tests and lint the component**
 
 Run: `npm test -- components/research/research-printer.test.tsx && npm run lint -- components/research/research-printer.tsx`
 
 Expected: PASS with no warnings.
 
-- [ ] **Step 6: Commit the printer slice**
+- [x] **Step 6: Commit the printer slice**
 
 ```bash
 git add components/research/research-printer.tsx components/research/research-printer.test.tsx app/globals.css
@@ -340,7 +340,7 @@ git commit -m "feat: render the structured research printer"
 - Create: `components/research/source-drawer.tsx`
 - Modify: `app/globals.css`
 
-- [ ] **Step 1: Write failing drawer tests**
+- [x] **Step 1: Write failing drawer tests**
 
 Test the actual dialog semantics, source/evaluation content, Escape and overlay close, and focus restoration:
 
@@ -360,13 +360,13 @@ it("moves focus into the drawer and restores the source trigger on close", () =>
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- components/research/source-drawer.test.tsx`
 
 Expected: FAIL because `SourceDrawer` does not exist.
 
-- [ ] **Step 3: Implement modal semantics and evidence content**
+- [x] **Step 3: Implement modal semantics and evidence content**
 
 Create `SourceDrawer` with optional `source`, `evaluation`, and `citationNumber` props. When open, save `document.activeElement`, set `document.body.style.overflow = "hidden"`, focus the close button, handle Escape, cycle Tab between focusable elements, and restore both overflow and focus during cleanup. Include this high-value comment:
 
@@ -376,17 +376,17 @@ Create `SourceDrawer` with optional `source`, `evaluation`, and `citationNumber`
 
 Render title, domain/date, snippet, accepted/rejected status, three scores, reason, and a safe `_blank` link. Do not render `rawContent`.
 
-- [ ] **Step 4: Add drawer CSS and responsive rules**
+- [x] **Step 4: Add drawer CSS and responsive rules**
 
 Add fixed overlay/panel styles, a 220ms transform transition, high-contrast close button, and mobile width `min(92vw, 520px)`. Disable sliding under reduced motion.
 
-- [ ] **Step 5: Run drawer tests**
+- [x] **Step 5: Run drawer tests**
 
 Run: `npm test -- components/research/source-drawer.test.tsx`
 
 Expected: PASS including focus restoration.
 
-- [ ] **Step 6: Commit the drawer slice**
+- [x] **Step 6: Commit the drawer slice**
 
 ```bash
 git add components/research/source-drawer.tsx components/research/source-drawer.test.tsx app/globals.css
@@ -399,7 +399,7 @@ git commit -m "feat: show research evidence in a source drawer"
 - Modify: `components/research/use-research-stream.test.tsx`
 - Modify: `components/research/use-research-stream.ts`
 
-- [ ] **Step 1: Write the failing retry test**
+- [x] **Step 1: Write the failing retry test**
 
 Add a test that makes the first fetch fail safely, calls `retry()`, returns a successful terminal event on the second fetch, and asserts the same normalized request body was sent twice while the final event array contains only the second run.
 
@@ -410,13 +410,13 @@ expect(fetch).toHaveBeenNthCalledWith(2, "/api/research", expect.objectContainin
 expect(result.current.run).toEqual({ status: "completed", events: [terminal] });
 ```
 
-- [ ] **Step 2: Run the focused retry test and verify RED**
+- [x] **Step 2: Run the focused retry test and verify RED**
 
 Run: `npm test -- components/research/use-research-stream.test.tsx -t "retries the last valid request from scratch"`
 
 Expected: FAIL because the hook does not expose `retry` or `canRetry`.
 
-- [ ] **Step 3: Retain only validated input and expose retry**
+- [x] **Step 3: Retain only validated input and expose retry**
 
 Add `lastInputRef`, assign `parsed.data` only after successful validation, and return:
 
@@ -432,13 +432,13 @@ return { run, start, retry, canRetry: lastInputRef.current !== null, cancel, res
 
 The existing `start` generation increment and `{ status: "running", events: [] }` reducer branch guarantee the retry does not mix old events. Add a Chinese comment explaining that retry reuses input, not workflow state.
 
-- [ ] **Step 4: Run all hook tests**
+- [x] **Step 4: Run all hook tests**
 
 Run: `npm test -- components/research/use-research-stream.test.tsx`
 
 Expected: PASS with existing cancellation and protocol tests unchanged.
 
-- [ ] **Step 5: Commit retry behavior**
+- [x] **Step 5: Commit retry behavior**
 
 ```bash
 git add components/research/use-research-stream.ts components/research/use-research-stream.test.tsx
@@ -454,7 +454,7 @@ git commit -m "feat: retry research runs from the original input"
 - Delete: `components/research/source-card.tsx`
 - Modify: `app/globals.css`
 
-- [ ] **Step 1: Update mocks and write failing integration tests**
+- [x] **Step 1: Update mocks and write failing integration tests**
 
 Extend the stream hook mock with `retry` and `canRetry`. Replace EventTimeline/SourceCard assertions with these behaviors:
 
@@ -482,13 +482,13 @@ it("opens the same source drawer from a report citation", () => {
 });
 ```
 
-- [ ] **Step 2: Run workbench tests and verify RED**
+- [x] **Step 2: Run workbench tests and verify RED**
 
 Run: `npm test -- components/research/research-workbench.test.tsx`
 
 Expected: FAIL because the old timeline/source grid layout is still rendered.
 
-- [ ] **Step 3: Refactor the workbench composition**
+- [x] **Step 3: Refactor the workbench composition**
 
 In `ResearchWorkbench`:
 
@@ -507,21 +507,21 @@ Use a Chinese comment at the state branch:
 // 完成态优先服务“阅读结论”，失败态优先服务“诊断过程”，所以只有前者自动折叠打印记录。
 ```
 
-- [ ] **Step 4: Remove replaced components and stale imports**
+- [x] **Step 4: Remove replaced components and stale imports**
 
 Delete `event-timeline.tsx` and `source-card.tsx` only after no test/import references remain. Keep `sourceDomId` only if another consumer still uses it; otherwise remove it and its tests.
 
-- [ ] **Step 5: Implement fixed workspace and independent scrolling**
+- [x] **Step 5: Implement fixed workspace and independent scrolling**
 
 Update desktop CSS so `.workspace-shell` uses `height: 100dvh`, `display: flex`, `flex-direction: column`, and `overflow: hidden`; `.workspace-grid` receives `min-height: 0; flex: 1`; `.workspace-content` receives `min-height: 0; overflow-y: auto`. Preserve readable document scrolling below 960px by reverting the shell to `height: auto; overflow: visible` and making the progress panel static.
 
-- [ ] **Step 6: Run integration and all component tests**
+- [x] **Step 6: Run integration and all component tests**
 
 Run: `npm test -- components/research/research-workbench.test.tsx components/research/research-printer.test.tsx components/research/source-drawer.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit workbench integration**
+- [x] **Step 7: Commit workbench integration**
 
 ```bash
 git add components/research/research-workbench.tsx components/research/research-workbench.test.tsx components/research/event-timeline.tsx components/research/source-card.tsx app/globals.css
@@ -534,7 +534,7 @@ git commit -m "feat: integrate the structured printer workspace"
 - Modify: `docs/architecture.md`
 - Modify: `docs/superpowers/plans/2026-07-15-structured-research-printer.md`
 
-- [ ] **Step 1: Update architecture documentation**
+- [x] **Step 1: Update architecture documentation**
 
 Add the printer projection and source drawer to the component table and browser Mermaid graph. Add a “结构化打印流” section explaining:
 
@@ -544,13 +544,13 @@ Add the printer projection and source drawer to the component table and browser 
 - public workflow decisions differ from private chain-of-thought;
 - recommended reading order from event schema through stream, projection, printer, workbench, and drawer.
 
-- [ ] **Step 2: Run focused regression tests**
+- [x] **Step 2: Run focused regression tests**
 
 Run: `npm test -- components/research/research-printer-model.test.ts components/research/research-printer.test.tsx components/research/source-drawer.test.tsx components/research/use-research-stream.test.tsx components/research/research-workbench.test.tsx`
 
 Expected: all focused tests PASS.
 
-- [ ] **Step 3: Run the full automated verification**
+- [x] **Step 3: Run the full automated verification**
 
 Run each command independently:
 
@@ -564,7 +564,7 @@ git diff --check
 
 Expected: every command exits 0 with no unexpected warnings.
 
-- [ ] **Step 4: Run browser QA**
+- [x] **Step 4: Run browser QA**
 
 Start the app with `npm run dev`, then verify:
 
@@ -578,7 +578,7 @@ Start the app with `npm run dev`, then verify:
 8. mobile layout returns to document scrolling without clipped content;
 9. reduced-motion mode disables sliding and smooth scrolling.
 
-- [ ] **Step 5: Mark this plan complete and commit documentation**
+- [x] **Step 5: Mark this plan complete and commit documentation**
 
 Change completed checkboxes in this plan to `[x]`, then run:
 
