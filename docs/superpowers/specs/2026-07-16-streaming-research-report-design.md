@@ -165,6 +165,9 @@ sequenceDiagram
         Route->>Hook: report.delta
         Hook->>UI: 30–50ms 合并更新
     end
+    Agent->>Route: report.validating
+    Route->>Hook: report.validating
+    Hook->>UI: 冻结草稿并显示 validating
     Agent->>Route: report.completed(report)
     Route->>Hook: report.completed
     Hook->>UI: 正式报告原位替换草稿
@@ -180,8 +183,9 @@ sequenceDiagram
 
     Agent->>Hook: report.started
     Agent->>Hook: report.delta × N
+    Agent->>Hook: report.validating
     Agent->>Hook: report.repairing
-    Hook->>UI: 冻结草稿并显示 validating / repairing
+    Hook->>UI: 冻结草稿并从 validating 切换为 repairing
     alt 修复成功
         Agent->>Hook: report.completed 或 research.partial
         Hook->>UI: 切换正式报告
@@ -214,9 +218,9 @@ sequenceDiagram
 - 事件只能包含公开 Markdown，不得包含原始 JSON、私有推理或 provider 错误；
 - 重复、跳号、倒序或非法 mode 视为协议错误。
 
-### 6.3 `report.repairing`
+### 6.3 `report.validating` 与 `report.repairing`
 
-`report.repairing` 是低频、可重放的研究流程事件，进入 `run.events`。Printer 将当前 Synthesis 记录更新为 `repairing`，而不是新增大量草稿卡片。该事件不包含错误细节。
+两者都是低频、可重放的研究流程事件并进入 `run.events`：partial stream 结束后先发送 `report.validating`；只有最终对象校验失败且可修复时才继续发送 `report.repairing`。Printer 将当前 Synthesis 记录依次更新为 `validating` 或 `repairing`，而不是新增大量草稿卡片。两个事件都不包含错误细节。
 
 ### 6.4 高频事件不进入持久展示日志
 
@@ -315,7 +319,8 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 | 网络或 reader 失败 | 保留并标记 incomplete | 唯一 `research.failed` | Retry / New research |
 | 协议或 sequence 错误 | 保留最后合法版本 | 安全 `research.failed` | Retry / New research |
 | 用户取消 | 保留并标记 incomplete | 唯一 `research.cancelled` | Retry / New research |
-| 第一次最终校验失败 | 冻结为 repairing | `report.repairing` | 等待后台修复 |
+| partial stream 结束 | 冻结为 validating | `report.validating` | 等待最终对象校验 |
+| 第一次最终校验失败 | 从 validating 变为 repairing | `report.repairing` | 等待后台修复 |
 | 后台修复成功 | 由正式报告替换 | completed / partial | 正常阅读 |
 | 后台修复失败 | 保留并标记 incomplete | 唯一 `research.failed` | Retry / New research |
 | 完成前没有任何 delta | 显示生成状态 | 最终 completed / failed | 使用兼容路径 |
@@ -344,17 +349,17 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 | `lib/providers/research-model.test.ts` | 覆盖 partial stream、最终校验、取消、修复与安全错误 |
 | `lib/agent/report-draft.ts` | partial report 到 Markdown、append/replace 差异计算纯函数 |
 | `lib/agent/report-draft.test.ts` | 覆盖缺失字段、增长、数组、引用、回退 replace 和确定性 |
-| `lib/agent/research-events.ts` | 定义 `report.delta`、`report.repairing` 与大小/sequence 约束 |
+| `lib/agent/research-events.ts` | 定义 `report.delta`、`report.validating`、`report.repairing` 与大小/sequence 约束 |
 | `lib/agent/research-events.test.ts` | 覆盖新事件的严格解析、私有字段拒绝和编码上限 |
-| `lib/agent/research-state.ts` | 接受 repairing 阶段事件并保持合法状态机转换 |
-| `lib/agent/research-agent.ts` | 编排 started、delta、repairing、completed/partial/failed |
+| `lib/agent/research-state.ts` | 接受 validating / repairing 阶段事件并保持合法状态机转换 |
+| `lib/agent/research-agent.ts` | 编排 started、delta、validating、repairing、completed/partial/failed |
 | `lib/server/research-route.ts` | 延续 NDJSON 背压、取消和唯一终止保证 |
 | `components/research/use-research-stream.ts` | 校验 delta、独立草稿状态、30–50ms 合并、generation 隔离 |
 | `components/research/streaming-report-draft.tsx` | 使用 Streamdown 渲染草稿与阶段提示，不拥有滚动 |
-| `components/research/research-printer-model.ts` | 忽略 delta；将 repairing 投影到当前 Synthesis 记录 |
+| `components/research/research-printer-model.ts` | 忽略 delta；将 validating / repairing 投影到当前 Synthesis 记录 |
 | `components/research/research-workbench.tsx` | 草稿/正式报告切换、滚动跟随、完成保持位置 |
 | `components/research/research-report.tsx` | 保留正式报告和安全来源引用；支持流式完成后禁用重复入场动画 |
-| `app/globals.css` | 草稿状态、caret、incomplete/repairing、reduced-motion 样式 |
+| `app/globals.css` | 草稿状态、caret、validating/repairing/incomplete、reduced-motion 样式 |
 | `docs/architecture.md` | 解释真实报告流、瞬态草稿与正式报告边界及学习路径 |
 
 拆分原则：协议、投影、流消费、展示和滚动各自只有一个所有者。`report-draft.ts` 必须保持纯函数，`StreamingReportDraft` 必须保持无滚动状态，`ResearchWorkbench` 必须继续是唯一右侧滚动控制者。
@@ -369,7 +374,7 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 - 缺失字段不生成伪占位结论；
 - 草稿引用只输出不可点击编号；
 - delta sequence、mode、空文本、额外字段和字节上限；
-- repairing 合法状态转换与重复终止拒绝。
+- validating / repairing 合法状态转换与重复终止拒绝。
 
 ### 13.2 Provider 与 Agent 测试
 
@@ -379,8 +384,8 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 - 修复期间不发送第二组 delta；
 - abort 及时停止生成；
 - provider 原始异常和响应内容不进入公开事件；
-- 完整顺序为 started → delta × N → completed/partial；
-- 修复顺序为 started → delta × N → repairing → completed/partial 或 failed。
+- 正常顺序为 started → delta × N → validating → completed/partial；
+- 修复顺序为 started → delta × N → validating → repairing → completed/partial 或 failed。
 
 ### 13.3 Hook 与组件测试
 
