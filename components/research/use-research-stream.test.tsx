@@ -629,4 +629,20 @@ describe("useResearchStream", () => {
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.error).toBe("Research stream failed.");
   });
+
+  it("retries the last valid request from scratch", async () => {
+    const terminal: ResearchEvent = { type: "report.completed", report };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(responseFromChunks([line(terminal)]));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+    expect(result.current.run.status).toBe("failed");
+    await act(() => result.current.retry());
+
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/research", expect.objectContaining({ body: JSON.stringify(input) }));
+    expect(result.current.run).toEqual({ status: "completed", events: [terminal] });
+  });
 });

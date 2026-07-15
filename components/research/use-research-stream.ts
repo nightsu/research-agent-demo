@@ -82,6 +82,8 @@ function isTerminal(event: ResearchEvent): boolean {
 export function useResearchStream(): {
   run: ResearchRun;
   start(input: ResearchRequest): Promise<void>;
+  retry(): Promise<void>;
+  canRetry: boolean;
   cancel(): void;
   reset(): void;
 } {
@@ -89,6 +91,7 @@ export function useResearchStream(): {
   const generationRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  const lastInputRef = useRef<ResearchRequest | null>(null);
 
   const isCurrent = useCallback(
     (generation: number) =>
@@ -125,6 +128,8 @@ export function useResearchStream(): {
         controllerRef.current = null;
         return;
       }
+
+      lastInputRef.current = parsed.data;
 
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -273,9 +278,16 @@ export function useResearchStream(): {
     dispatch({ type: "reset", generation });
   }, []);
 
+  const retry = useCallback(async () => {
+    const input = lastInputRef.current;
+    if (!input) return;
+    // 重试只复用已校验输入；start 会创建新 generation 并清空旧事件与运行状态。
+    await start(input);
+  }, [start]);
+
   const run: ResearchRun =
     state.error === undefined
       ? { status: state.status, events: state.events }
       : { status: state.status, events: state.events, error: state.error };
-  return { run, start, cancel, reset };
+  return { run, start, retry, canRetry: lastInputRef.current !== null, cancel, reset };
 }
