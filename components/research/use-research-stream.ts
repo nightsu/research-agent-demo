@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import {
   decodeEventLine,
@@ -92,6 +92,7 @@ export function useResearchStream(): {
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const lastInputRef = useRef<ResearchRequest | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
 
   const isCurrent = useCallback(
     (generation: number) =>
@@ -130,6 +131,7 @@ export function useResearchStream(): {
       }
 
       lastInputRef.current = parsed.data;
+      setCanRetry(true);
 
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -289,5 +291,5 @@ export function useResearchStream(): {
     state.error === undefined
       ? { status: state.status, events: state.events }
       : { status: state.status, events: state.events, error: state.error };
-  return { run, start, retry, canRetry: lastInputRef.current !== null, cancel, reset };
+  return { run, start, retry, canRetry, cancel, reset };
 }

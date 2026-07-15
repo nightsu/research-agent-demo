@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchEvent } from "@/lib/agent/research-events";
 import type { ResearchReport, Source } from "@/lib/agent/research-types";
 
-import { EventTimeline } from "./event-timeline";
 import { ResearchForm } from "./research-form";
 import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
@@ -83,6 +82,7 @@ const completedEvents: ResearchEvent[] = [
 const start = vi.fn();
 const cancel = vi.fn();
 const reset = vi.fn();
+const retry = vi.fn();
 let mockedRun: {
   status: "idle" | "running" | "completed" | "partial" | "cancelled" | "failed";
   events: ResearchEvent[];
@@ -90,7 +90,7 @@ let mockedRun: {
 };
 
 vi.mock("./use-research-stream", () => ({
-  useResearchStream: () => ({ run: mockedRun, start, cancel, reset }),
+  useResearchStream: () => ({ run: mockedRun, start, cancel, reset, retry, canRetry: true }),
 }));
 
 beforeEach(() => {
@@ -98,6 +98,7 @@ beforeEach(() => {
   start.mockReset();
   cancel.mockReset();
   reset.mockReset();
+  retry.mockReset();
 });
 
 afterEach(() => {
@@ -233,25 +234,6 @@ describe("observable research views", () => {
     expect(screen.getByText("Planning").closest("li")).toHaveTextContent("Completed");
   });
 
-  it("renders chronological event details and keeps safe raw JSON closed", () => {
-    const unsafe = {
-      ...completedEvents[2],
-      reasoning_content: "hidden chain claim",
-    } as unknown as ResearchEvent;
-    render(<EventTimeline events={[...completedEvents.slice(0, 8), unsafe]} />);
-
-    expect(screen.getAllByText(/Identify meaningful browser/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Find current primary evidence/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/browser rendering changes 2026/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Direct and current evidence/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Independent confirmation/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Evidence is converging/i).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/hidden chain claim/i)).not.toBeInTheDocument();
-    for (const details of screen.getAllByText(/raw event/i)) {
-      expect(details.closest("details")).not.toHaveAttribute("open");
-    }
-  });
-
   it("renders a structured markdown report with only known citation buttons", () => {
     const onCitation = vi.fn();
     render(
@@ -314,7 +296,7 @@ describe("ResearchWorkbench", () => {
     rerender(<ResearchWorkbench />);
     fireEvent.click(screen.getByRole("button", { name: /stop research/i }));
     expect(cancel).toHaveBeenCalledOnce();
-    const timeline = screen.getByRole("region", { name: /research timeline/i });
+    const timeline = screen.getByRole("region", { name: /research process/i });
     expect(timeline).not.toHaveAttribute("aria-live");
     expect(timeline).not.toHaveAttribute("aria-busy");
     expect(screen.getByRole("status")).toHaveAttribute("aria-atomic", "true");
@@ -334,7 +316,7 @@ describe("ResearchWorkbench", () => {
     expect(reset).toHaveBeenCalledOnce();
   });
 
-  it("shows partial and cancelled labels and selects a cited source", () => {
+  it("promotes a partial report, collapses the process, and opens cited evidence", () => {
     mockedRun = {
       status: "partial",
       events: [
@@ -345,16 +327,16 @@ describe("ResearchWorkbench", () => {
     const { rerender } = render(<ResearchWorkbench />);
     expect(screen.getAllByText(/partial/i).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /source 1/i }));
-    const sourceCard = screen.getByRole("article", { name: source.title });
-    expect(sourceCard).toHaveAttribute("data-selected", "true");
-    expect(within(sourceCard).getByRole("link", { name: /open source/i })).toHaveAttribute(
+    const drawer = screen.getByRole("dialog", { name: source.title });
+    expect(within(drawer).getByRole("link", { name: /open original source/i })).toHaveAttribute(
       "target",
       "_blank",
     );
-    expect(within(sourceCard).getByRole("link", { name: /open source/i })).toHaveAttribute(
+    expect(within(drawer).getByRole("link", { name: /open original source/i })).toHaveAttribute(
       "rel",
       expect.stringContaining("noreferrer"),
     );
+    expect(screen.getByText(/view research process/i).closest("details")).not.toHaveAttribute("open");
 
     mockedRun = { status: "cancelled", events: [{ type: "research.cancelled" }] };
     rerender(<ResearchWorkbench />);
@@ -374,48 +356,12 @@ describe("ResearchWorkbench", () => {
     expect(status).toHaveFocus();
   });
 
-  it("focuses and scrolls the cited source on every citation click", () => {
-    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: false }));
-    mockedRun = { status: "completed", events: completedEvents };
+  it("keeps a failed process visible and retries from scratch", () => {
+    mockedRun = { status: "failed", events: completedEvents.slice(0, 5), error: "Research stream failed." };
     render(<ResearchWorkbench />);
-    const sourceCard = screen.getByRole("article", { name: source.title });
-    const scrollIntoView = vi.fn();
-    const focus = vi.spyOn(sourceCard as HTMLElement, "focus");
-    Object.defineProperty(sourceCard, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-    const citation = screen.getByRole("button", { name: /source 1/i });
-
-    fireEvent.click(citation);
-    fireEvent.click(citation);
-
-    expect(scrollIntoView).toHaveBeenCalledTimes(2);
-    expect(scrollIntoView).toHaveBeenNthCalledWith(1, {
-      behavior: "smooth",
-      block: "center",
-    });
-    expect(focus).toHaveBeenCalledTimes(2);
-  });
-
-  it("uses instant citation scrolling when reduced motion is preferred", () => {
-    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({ matches: true }));
-    mockedRun = { status: "completed", events: completedEvents };
-    render(<ResearchWorkbench />);
-    const sourceCard = screen.getByRole("article", { name: source.title });
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(sourceCard, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /source 1/i }));
-
-    expect(scrollIntoView).toHaveBeenCalledWith({
-      behavior: "auto",
-      block: "center",
-    });
-    expect(sourceCard).toHaveFocus();
+    expect(screen.getByRole("region", { name: /research process/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /retry research/i }));
+    expect(retry).toHaveBeenCalledOnce();
   });
 });
 

@@ -89,10 +89,6 @@ function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
   }
 }
 
-export function sourceDomId(sourceId: string): string {
-  return `source-${encodeURIComponent(sourceId)}`;
-}
-
 export function buildCitationNumbers(
   sources: Source[],
   sourceIdentityById: ReadonlyMap<string, string> = new Map(),
