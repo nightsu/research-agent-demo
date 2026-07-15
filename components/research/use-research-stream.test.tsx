@@ -35,6 +35,13 @@ function line(event: ResearchEvent): string {
   return `${JSON.stringify(event)}\n`;
 }
 
+function localFailure(
+  message: string,
+  recoverable = true,
+): ResearchEvent {
+  return { type: "research.failed", message, recoverable };
+}
+
 function responseFromChunks(
   chunks: string[],
   options: { onCancel?: () => void; failAfter?: number } = {},
@@ -254,7 +261,7 @@ describe("useResearchStream", () => {
 
     expect(result.current.run).toEqual({
       status: "failed",
-      events: [prior],
+      events: [prior, localFailure("Research stream protocol error.")],
       error: "Research stream protocol error.",
     });
     expect(result.current.run.error).not.toContain("228");
@@ -369,7 +376,7 @@ describe("useResearchStream", () => {
 
     expect(result.current.run).toEqual({
       status: "failed",
-      events: [],
+      events: [localFailure("Research stream protocol error.")],
       error: "Research stream protocol error.",
     });
     expect(stream.cancel).toHaveBeenCalledOnce();
@@ -388,6 +395,9 @@ describe("useResearchStream", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.error).toBe("Invalid research request.");
+    expect(result.current.run.events).toEqual([
+      localFailure("Invalid research request.", false),
+    ]);
   });
 
   it("fails safely for a non-OK response without exposing its body", async () => {
@@ -403,8 +413,58 @@ describe("useResearchStream", () => {
 
     expect(result.current.run).toEqual({
       status: "failed",
-      events: [],
+      events: [localFailure("Research request failed.")],
       error: "Research request failed.",
+    });
+    expect(JSON.stringify(result.current.run)).not.toContain("provider-api-key-secret");
+  });
+
+  it("appends a local cancellation after already received public events", async () => {
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+    let promise!: Promise<void>;
+    act(() => {
+      promise = result.current.start(input);
+    });
+    act(() =>
+      stream.enqueue(line({ type: "plan.started", question: input.question })),
+    );
+    await waitFor(() => expect(result.current.run.events).toHaveLength(1));
+
+    act(() => result.current.cancel());
+    stream.error(new DOMException("aborted", "AbortError"));
+    await act(() => promise);
+
+    expect(result.current.run).toEqual({
+      status: "cancelled",
+      events: [
+        { type: "plan.started", question: input.question },
+        { type: "research.cancelled" },
+      ],
+    });
+  });
+
+  it("appends a sanitized failure after a protocol error without duplicating prior events", async () => {
+    const prior: ResearchEvent = {
+      type: "plan.started",
+      question: input.question,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(responseFromChunks([line(prior), "not-json\n"])),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run).toEqual({
+      status: "failed",
+      events: [
+        prior,
+        localFailure("Research stream protocol error."),
+      ],
+      error: "Research stream protocol error.",
     });
   });
 
@@ -430,7 +490,7 @@ describe("useResearchStream", () => {
 
     expect(result.current.run).toEqual({
       status: "failed",
-      events: [prior],
+      events: [prior, localFailure("Research stream protocol error.")],
       error: "Research stream protocol error.",
     });
     expect(cancelled).toHaveBeenCalledOnce();
@@ -454,6 +514,7 @@ describe("useResearchStream", () => {
 
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.events).toEqual([terminal]);
+    expect(result.current.run.error).toBe("Research stream protocol error.");
     expect(cancelled).toHaveBeenCalledOnce();
   });
 
@@ -499,7 +560,10 @@ describe("useResearchStream", () => {
     act(() => stream.close());
     await act(() => promise);
 
-    expect(result.current.run).toEqual({ status: "cancelled", events: [] });
+    expect(result.current.run).toEqual({
+      status: "cancelled",
+      events: [{ type: "research.cancelled" }],
+    });
   });
 
   it("reset aborts an active request and returns to idle with no events", async () => {
@@ -613,6 +677,9 @@ describe("useResearchStream", () => {
     await act(() => result.current.start(input));
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.error).toBe("Unable to complete research.");
+    expect(result.current.run.events).toEqual([
+      localFailure("Unable to complete research."),
+    ]);
     expect(result.current.run.error).not.toContain("secret");
   });
 
@@ -628,6 +695,9 @@ describe("useResearchStream", () => {
 
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.error).toBe("Research stream failed.");
+    expect(result.current.run.events.at(-1)).toEqual(
+      localFailure("Research stream failed."),
+    );
   });
 
   it("retries the last valid request from scratch", async () => {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import {
   decodeEventLine,
+  researchEventSchema,
   type ResearchEvent,
 } from "@/lib/agent/research-events";
 import {
@@ -29,7 +30,7 @@ type State = ResearchRun & { generation: number };
 type Action =
   | { type: "start"; generation: number }
   | { type: "event"; generation: number; event: ResearchEvent }
-  | { type: "fail"; generation: number; error: string }
+  | { type: "fail"; generation: number; error: string; recoverable: boolean }
   | { type: "cancel"; generation: number }
   | { type: "reset"; generation: number };
 
@@ -43,6 +44,19 @@ const terminalStatuses: Partial<
   "research.failed": "failed",
 };
 
+function localFailureEvent(
+  message: string,
+  recoverable: boolean,
+): Extract<ResearchEvent, { type: "research.failed" }> {
+  const event = researchEventSchema.parse({
+    type: "research.failed",
+    message,
+    recoverable,
+  });
+  if (event.type !== "research.failed") throw new Error("Invalid local failure event");
+  return event;
+}
+
 function reducer(state: State, action: Action): State {
   if (action.type === "start") {
     return { status: "running", events: [], generation: action.generation };
@@ -53,12 +67,29 @@ function reducer(state: State, action: Action): State {
   if (action.generation !== state.generation) return state;
 
   if (action.type === "cancel") {
-    return state.status === "running"
-      ? { ...state, status: "cancelled", error: undefined }
-      : state;
+    if (state.status !== "running") return state;
+    const event = researchEventSchema.parse({ type: "research.cancelled" });
+    return {
+      ...state,
+      status: "cancelled",
+      // 本地取消没有服务端 NDJSON 记录；只在尚无终止事件时补一条，避免双重终止卡片。
+      events: state.events.some(isTerminal)
+        ? state.events
+        : [...state.events, event],
+      error: undefined,
+    };
   }
   if (action.type === "fail") {
-    return { ...state, status: "failed", error: action.error };
+    const event = localFailureEvent(action.error, action.recoverable);
+    return {
+      ...state,
+      status: "failed",
+      // 客户端只能合成固定、已清洗的公开消息；若服务端已发终止事件，仅更新状态而不追加。
+      events: state.events.some(isTerminal)
+        ? state.events
+        : [...state.events, event],
+      error: event.message,
+    };
   }
 
   const status = terminalStatuses[action.event.type] ?? state.status;
@@ -125,6 +156,7 @@ export function useResearchStream(): {
           type: "fail",
           generation,
           error: "Invalid research request.",
+          recoverable: false,
         });
         controllerRef.current = null;
         return;
@@ -154,6 +186,7 @@ export function useResearchStream(): {
               type: "fail",
               generation,
               error: "Research request failed.",
+              recoverable: true,
             });
           }
           return;
@@ -164,6 +197,7 @@ export function useResearchStream(): {
               type: "fail",
               generation,
               error: "Research stream failed.",
+              recoverable: true,
             });
           }
           return;
@@ -221,6 +255,7 @@ export function useResearchStream(): {
             type: "fail",
             generation,
             error: "Research stream failed.",
+            recoverable: true,
           });
         }
       } catch (error) {
@@ -231,6 +266,7 @@ export function useResearchStream(): {
             type: "fail",
             generation,
             error: "Research stream protocol error.",
+            recoverable: true,
           });
         } else if (controller.signal.aborted) {
           dispatch({ type: "cancel", generation });
@@ -241,6 +277,7 @@ export function useResearchStream(): {
             error: reader
               ? "Research stream failed."
               : "Unable to complete research.",
+            recoverable: true,
           });
         }
       } finally {
