@@ -257,6 +257,16 @@ async function generateStructuredAttempt<T>(
   return validate(schema.parse(result.output));
 }
 
+async function settleStructuredOutput(result: {
+  readonly output: PromiseLike<unknown>;
+}): Promise<void> {
+  try {
+    await result.output;
+  } catch {
+    // 这里只负责释放 tee 分支，cleanup 错误不能覆盖调用方真正需要处理的首个错误。
+  }
+}
+
 async function generateStreamingReport(
   prompt: string,
   sources: Source[],
@@ -286,17 +296,18 @@ async function generateStreamingReport(
   } catch (streamError) {
     streamAbortController.abort(streamError);
 
-    try {
-      // partial 分支提前退出后必须收走 tee 的 output 分支，否则 SDK 会继续缓冲；清理失败不能覆盖首个错误。
-      await result.output;
-    } catch {
-      // cleanup only
-    }
+    // partial 分支提前退出后必须收走 tee 的 output 分支，否则 SDK 会继续缓冲。
+    await settleStructuredOutput(result);
 
     throw streamError;
   }
 
-  await options.onValidating?.();
+  try {
+    await options.onValidating?.();
+  } catch (validatingError) {
+    await settleStructuredOutput(result);
+    throw validatingError;
+  }
 
   try {
     const output = await result.output;

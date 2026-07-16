@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NoObjectGeneratedError } from "ai";
-import { ZodError } from "zod";
+import { toJSONSchema, ZodError } from "zod";
 
 import {
   evidenceAssessmentSchema,
@@ -342,9 +342,46 @@ describe("structured research model", () => {
       abortSignal: controller.signal,
       maxOutputTokens: 12_000,
     });
+    expect(repairRequest.output).toEqual({ kind: "json" });
+    expect(jsonOutput).toHaveBeenCalledOnce();
+    expect(jsonOutput).toHaveBeenCalledWith();
+    expect(parseOutputJsonSchema(repairRequest.prompt)).toEqual(
+      toJSONSchema(reportSchema, { target: "draft-7" }),
+    );
     expect(repairRequest.prompt).toContain(
       "Repair instruction: the previous generation failed validation",
     );
+  });
+
+  it("settles final output and preserves an async validating callback rejection", async () => {
+    const validatingError = new Error("validating callback failed");
+    const cleanupEvents: string[] = [];
+    streamText.mockReturnValueOnce({
+      partialOutputStream: controlledAsyncIterable([]),
+      get output() {
+        cleanupEvents.push("output:read");
+        return Promise.reject(new Error("cleanup failed")).finally(() => {
+          cleanupEvents.push("output:settle");
+        });
+      },
+    });
+    const onRepairing = vi.fn();
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      {
+        onValidating: () => Promise.reject(validatingError),
+        onRepairing,
+      },
+    );
+
+    await expect(operation).rejects.toBe(validatingError);
+    expect(cleanupEvents).toEqual(["output:read", "output:settle"]);
+    expect(onRepairing).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
   });
 
   it("aborts and settles the final output branch when a partial callback rejects", async () => {
