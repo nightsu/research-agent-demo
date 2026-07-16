@@ -22,13 +22,25 @@ const draftStatusText: Record<ReportDraftState["status"], string> = {
 };
 
 type DraftLinkProps = ComponentPropsWithoutRef<"a"> & ExtraProps;
+type DraftTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
+
+function DraftTable({ node, ...tableProps }: DraftTableProps) {
+  // node 是 Markdown AST 元数据，不能透传给真实 DOM 元素。
+  void node;
+  return (
+    <div className="streaming-report-draft-table">
+      <table {...tableProps} data-streamdown="draft-table" />
+    </div>
+  );
+}
 
 const draftMarkdownComponents = {
   a: ({ children }: DraftLinkProps) => (
     <span className="streaming-report-draft-link">{children}</span>
   ),
   img: () => null,
-} satisfies Pick<Components, "a" | "img">;
+  table: DraftTable,
+} satisfies Pick<Components, "a" | "img" | "table">;
 // Streamdown 2.5 的 Components 索引签名比具体元素属性更宽；上方 Pick 已逐项校验实现。
 const streamdownDraftComponents = draftMarkdownComponents as Components;
 

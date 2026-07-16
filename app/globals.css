@@ -302,6 +302,15 @@ textarea::placeholder { color: #8a918e; }
 .streaming-report-draft-body blockquote { margin-left: 0; padding-left: 18px; border-left: 3px solid var(--teal); color: var(--ink-muted); }
 .streaming-report-draft-body code { border-radius: 5px; background: var(--surface-muted); padding: 2px 5px; font-size: 0.9em; }
 .streaming-report-draft-body pre { overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+.streaming-report-draft-table {
+  width: 100%;
+  margin: 18px 0;
+  overflow-x: auto;
+  overflow-y: clip;
+}
+.streaming-report-draft-table table { width: 100%; border-collapse: collapse; }
+.streaming-report-draft-table th,
+.streaming-report-draft-table td { border: 1px solid var(--line); padding: 9px 12px; text-align: left; }
 .streaming-report-draft-link { color: var(--ink-muted); text-decoration: underline dotted; text-underline-offset: 3px; }
 .streaming-report-draft-body > :last-child::after { animation: streaming-draft-caret 900ms steps(1, end) infinite; }
 @keyframes streaming-draft-caret { 50% { opacity: 0; } }

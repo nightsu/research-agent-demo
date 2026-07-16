@@ -67,6 +67,7 @@ describe("desktop research workspace layout", () => {
   it("keeps the streaming draft in the existing workspace scroll flow", () => {
     const draft = ruleBody(".streaming-report-draft");
     const draftBody = ruleBody(".streaming-report-draft-body");
+    const draftTable = ruleBody(".streaming-report-draft-table");
 
     expect(draft).toMatch(/overflow:\s*visible;/);
     expect(draftBody).toMatch(/overflow:\s*visible;/);
@@ -74,6 +75,10 @@ describe("desktop research workspace layout", () => {
     expect(draftBody).not.toMatch(/(?:height|max-height)\s*:/);
     expect(draft).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
     expect(draftBody).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(draftTable).toMatch(/overflow-x:\s*auto;/);
+    expect(draftTable).toMatch(/overflow-y:\s*clip;/);
+    expect(draftTable).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draftTable).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
   });
 
   it("fully disables streaming-draft motion when reduced motion is requested", () => {
