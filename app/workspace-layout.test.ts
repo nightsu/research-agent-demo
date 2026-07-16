@@ -84,6 +84,22 @@ describe("desktop research workspace layout", () => {
     );
   });
 
+  it("uses the final report surface and heading hierarchy for the streaming draft", () => {
+    const draft = ruleBody(".streaming-report-draft");
+    const reportMeta = ruleBody(".report-meta");
+
+    // 外壳尺寸只允许由 .research-report 定义，避免 Draft/Final 再次产生两套纸张。
+    expect(draft).not.toMatch(/(?:max-width|padding|border|border-radius|background)\s*:/);
+    expect(reportMeta).toMatch(/display:\s*flex;/);
+    expect(reportMeta).toMatch(/justify-content:\s*space-between;/);
+    expect(styles).toMatch(
+      /\.research-report\s*>\s*h2,\s*\.streaming-report-draft-body\s+h1\s*\{/,
+    );
+    expect(styles).toMatch(
+      /\.research-report\s+section\s*>\s*h3,\s*\.streaming-report-draft-body\s+h2\s*\{/,
+    );
+  });
+
   it("uses document scrolling and a fixed latest button on mobile", () => {
     const mobileStart = styles.indexOf("@media (max-width: 960px)");
     const mobileEnd = styles.indexOf("@media (max-width: 640px)");

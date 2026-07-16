@@ -253,23 +253,40 @@ textarea::placeholder { color: #8a918e; }
   from { opacity: 0; clip-path: inset(0 0 100% 0); transform: translateY(-8px); }
   to { opacity: 1; clip-path: inset(0); transform: translateY(0); }
 }
-.research-report > h2 { margin: 7px 0 34px; font-family: Georgia, "Times New Roman", serif; font-size: clamp(2rem, 5vw, 3.35rem); font-weight: 500; line-height: 1.05; }
+.research-report > h2,
+.streaming-report-draft-body h1 {
+  margin: 7px 0 34px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2rem, 5vw, 3.35rem);
+  font-weight: 500;
+  line-height: 1.05;
+}
 .research-report section { margin-top: 30px; }
-.research-report section > h3 { margin-bottom: 11px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 0.82rem; letter-spacing: 0.09em; text-transform: uppercase; }
+.research-report section > h3,
+.streaming-report-draft-body h2 {
+  margin: 30px 0 11px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: inherit;
+  letter-spacing: 0.09em;
+  line-height: inherit;
+  text-transform: uppercase;
+}
 .research-report p, .research-report li { color: #35433f; }
 .research-report ul { padding-left: 20px; }
-.streaming-report-draft {
-  overflow: visible;
-  max-width: 80ch;
-  margin: 0 auto 30px;
-  padding: clamp(26px, 5vw, 52px);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
+.streaming-report-draft { overflow: visible; }
+.report-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
 }
+.report-meta .eyebrow, .report-meta .draft-status { margin: 0; }
 .draft-status {
   width: fit-content;
-  margin: 0 0 24px;
   padding: 7px 11px;
   border-radius: 999px;
   background: var(--teal-soft);
@@ -286,14 +303,11 @@ textarea::placeholder { color: #8a918e; }
   overflow-wrap: anywhere;
 }
 .streaming-report-draft-body h1,
-.streaming-report-draft-body h2,
 .streaming-report-draft-body h3 {
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 500;
   line-height: 1.16;
 }
-.streaming-report-draft-body h1 { margin: 0 0 26px; font-size: clamp(2rem, 5vw, 3.35rem); }
-.streaming-report-draft-body h2 { margin: 30px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 1.35rem; }
 .streaming-report-draft-body h3 { margin: 24px 0 10px; font-size: 1.08rem; }
 .streaming-report-draft-body p,
 .streaming-report-draft-body li { color: #35433f; }
@@ -353,6 +367,7 @@ textarea::placeholder { color: #8a918e; }
   .research-form, .timeline-section, .research-report, .sources-section, .progress-panel { padding: 20px; }
   .form-options, .source-grid { grid-template-columns: 1fr; }
   .form-heading, .workspace-header { align-items: flex-start; }
+  .report-meta { align-items: flex-start; flex-direction: column; gap: 10px; }
   .workspace-header { flex-direction: column; }
   .workspace-header button { width: 100%; }
   .process-preview { display: grid; grid-template-columns: 1fr 1fr; text-align: center; }
