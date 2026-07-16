@@ -127,7 +127,12 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
         const emit = async (event: ResearchEvent): Promise<void> => {
           assertCanEmit(event);
           const encoded = encoder.encode(encodeEvent(event));
-          await waitForCapacity();
+          const abortedCancellation =
+            event.type === "research.cancelled" &&
+            workflowController.signal.aborted;
+          // Cancellation is the sole post-abort record. It must not deadlock
+          // behind capacity that a disconnected requester may never pull.
+          if (!abortedCancellation) await waitForCapacity();
           assertCanEmit(event);
           controller.enqueue(encoded);
           if (terminalEventTypes.has(event.type)) terminalEvent = event.type;

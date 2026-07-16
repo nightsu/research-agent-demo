@@ -265,6 +265,45 @@ describe("runResearch", () => {
     }]);
   });
 
+  it("numbers only accepted sources in streamed report citations without gaps", async () => {
+    const rejected = source("rejected");
+    const accepted = source("accepted");
+    const researchModel = model({
+      evaluateSources: vi.fn(async () => [{
+        ...evaluation(rejected.id),
+        decision: "rejected" as const,
+      }, evaluation(accepted.id)]),
+      generateReport: vi.fn(async (_question, _sources, _evaluations, _partial, options) => {
+        await options?.onPartialReport?.({
+          title: "Accepted evidence",
+          findings: [{
+            claim: "Only accepted evidence receives a citation number.",
+            sourceIds: [accepted.id, rejected.id],
+            confidence: "high",
+          }],
+        });
+        await options?.onValidating?.();
+        return reportFor(accepted.id);
+      }),
+    });
+    const { deps, events } = harness({
+      model: researchModel,
+      searchWeb: vi.fn(async () => [rejected, accepted]),
+    });
+
+    await runResearch(input, deps);
+
+    const draft = events.find(
+      (event): event is Extract<ResearchEvent, { type: "report.delta" }> =>
+        event.type === "report.delta",
+    );
+    expect(draft?.text).toContain(
+      "Only accepted evidence receives a citation number. (confidence: high) [1]",
+    );
+    expect(draft?.text).not.toContain("[2]");
+    expect(draft?.text).not.toContain(rejected.id);
+  });
+
   it("queues one unique gap follow-up and avoids duplicate planned queries", async () => {
     const assessEvidence = vi
       .fn<ResearchModel["assessEvidence"]>()

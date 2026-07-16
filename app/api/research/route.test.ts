@@ -581,7 +581,7 @@ describe("POST /api/research", () => {
     await run.mock.results[0].value;
   });
 
-  it("rejects all late events after request abort, including an optional cancellation terminal", async () => {
+  it("emits one cancellation terminal and rejects all other events after request abort", async () => {
     let workflowStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       workflowStarted = resolve;
@@ -625,9 +625,10 @@ describe("POST /api/research", () => {
     const events = await readEvents(response);
 
     expect(nonCancellationRejected).toBe(true);
-    expect(afterTerminalRejected).toBe(false);
+    expect(afterTerminalRejected).toBe(true);
     expect(events).toEqual([
       { type: "plan.started", question },
+      { type: "research.cancelled" },
     ]);
   });
 

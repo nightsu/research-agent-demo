@@ -614,8 +614,15 @@ export async function runResearch(
       { type: "synthesis.started", payload: {} },
       [{ type: "report.started", partial }],
     );
+    const latestEvaluationBySourceId = new Map(
+      state.evaluations.map((evaluation) => [evaluation.sourceId, evaluation]),
+    );
+    const acceptedSources = state.sources.filter(
+      (source) =>
+        latestEvaluationBySourceId.get(source.id)?.decision === "accepted",
+    );
     const citationNumbers = new Map(
-      state.sources.map((source, index) => [source.id, index + 1]),
+      acceptedSources.map((source, index) => [source.id, index + 1]),
     );
     let previousMarkdown = "";
     let sequence = 0;
