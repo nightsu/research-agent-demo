@@ -413,7 +413,7 @@ git commit -m "style: align streaming and final reports"
 - Modify: `docs/architecture.md`
 - Modify: `docs/superpowers/plans/2026-07-16-unified-report-surface.md`
 
-- [ ] **Step 1: Update the architecture learning path**
+- [x] **Step 1: Update the architecture learning path**
 
 Add this explanation after the current client Streamdown paragraph:
 
@@ -421,7 +421,7 @@ Add this explanation after the current client Streamdown paragraph:
 `ReportShell` 是 Draft 与正式报告唯一共享的 UI 边界：它只提供报告纸的 `<article>`、phase class 和语义属性透传。Draft 内部继续由 Streamdown 容忍未闭合 Markdown，正式态继续由 `ResearchReportView` 渲染经过校验的 finding、confidence 与可交互引用。共享外壳不等于共享不完整业务结构；这个边界避免为了视觉一致而把半成品引用误当成正式数据。
 ```
 
-- [ ] **Step 2: Run the complete automated verification**
+- [x] **Step 2: Run the complete automated verification**
 
 Run:
 
@@ -450,7 +450,7 @@ Start one current-source server on a free local port and use the in-app Browser 
 
 At 900 × 800 confirm document/window remains the only persistent vertical owner, the report shell introduces no `overflow-y: auto|scroll`, and the compact metadata stacks without horizontal overflow. Reset the viewport override and stop the server after capture.
 
-- [ ] **Step 5: Record evidence and commit documentation**
+- [x] **Step 5: Record evidence and commit documentation**
 
 Append exact test counts, build result, browser dimensions, phase classes, scroll owner, and any provider caveat to this plan's verification section, then run:
 
@@ -458,6 +458,16 @@ Append exact test counts, build result, browser dimensions, phase classes, scrol
 git add docs/architecture.md docs/superpowers/plans/2026-07-16-unified-report-surface.md
 git commit -m "docs: explain shared report surface"
 ```
+
+## Task 5 verification evidence (2026-07-16)
+
+- Automated verification: `npm test` exited 0 with 24/24 test files and 413/413 tests; `npm run lint`, `npm run typecheck`, and `git diff --check` each exited 0.
+- Build: the sandboxed `npm run build` failed only at Turbopack's internal `binding to a port: Operation not permitted (os error 1)` boundary. The approved outside-sandbox rerun exited 0: Next.js 16.2.10 compiled, typechecked, generated 5/5 static pages, and finalized `/`, `/_not-found`, and `/api/research`.
+- Current-source server: the worktree server reached ready state at `http://127.0.0.1:3217`. Because this worktree had no `.env.local`, the main checkout's existing `.env.local` was loaded into the server process without printing or copying its values.
+- Browser limitation: the required in-app Browser returned `Browser is not available: iab`. After following its bootstrap troubleshooting, browser discovery exposed only Chrome; Chrome was not substituted for the explicitly required surface. Consequently no 1440 × 900 or 900 × 800 viewport override was applied, no live provider request was sent, and no Browser console findings were available.
+- Desktop evidence boundary: live computed width, padding, border, background, Draft h1/h2 typography, two-measurement Draft growth, pre/post-final `scrollTop`, no-jump replacement, and final-only confidence/citation controls were not observed. Automated coverage confirms the Draft classes `research-report report-shell-draft streaming-report-draft`, `data-report-phase=draft`, `.report-meta` containment and flex/space-between rule, growing Markdown propagation, final `report-shell-final` / `data-report-phase=final`, and interactive known citations; these are not claimed as live visual evidence.
+- Narrow evidence boundary and concern: automated CSS coverage confirms document scrolling below 960 px and no `overflow-y: auto|scroll` on the Draft shell/body. However, `.report-meta { align-items: flex-start; flex-direction: column; gap: 10px; }` is declared only inside `@media (max-width: 640px)`, so an exact 900 px CSS viewport would not activate the requested stacked metadata rule. Horizontal overflow was not visually measured. No production change was made in this documentation-only task.
+- Cleanup: the viewport was never overridden; the dev server was stopped and port 3217 had no remaining listener.
 
 ## Plan self-review
 
