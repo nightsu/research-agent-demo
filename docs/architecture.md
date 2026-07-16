@@ -145,8 +145,8 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     Strategy{"ModelCapabilities<br/>structuredOutputs"}
-    Native["native branch<br/>Output.object(reportSchema)<br/>json_schema"]
-    Prompted["prompted branch<br/>appendJsonContract + Output.json<br/>json_object"]
+    Native["native branch<br/>Output.object({ schema: reportSchema })<br/>json_schema"]
+    Prompted["prompted branch<br/>appendJsonContract + Output.json()<br/>json_object"]
     Model["one AI SDK streamText call"]
     Partial["partialOutputStream<br/>PartialResearchReport snapshots"]
     Callbacks["provider callbacks<br/>serial await + stream cleanup"]
@@ -176,7 +176,7 @@ flowchart TB
 
 ### 服务端：partial snapshot 到有序 delta
 
-`generateReport()` 消费 `partialOutputStream`，并串行 `await onPartialReport`。这样 provider stream 不会跑在应用背压前面；consumer 中断或回调失败时，迭代器清理也不会被随后读取 final output 的错误覆盖。原生分支让 AI SDK 按完整 `reportSchema` 产生 partial；prompted 分支则先用本地 deep-partial Zod schema 检查每个快照。尚未形成合法字段组合的 partial 会被跳过，而不会变成公开 delta；最终 output 无论来自哪个分支，都必须再通过完整 `reportSchema`。每个合法 partial object 才进入纯函数 `reportDraftToMarkdown()`，只按正式报告顺序投影已经存在的字段和已知引用编号，不补造字段、URL 或来源。
+`generateReport()` 以 `for await` 消费 `partialOutputStream`，并串行 `await onPartialReport`：当前 callback 尚未完成时，应用不会继续请求、投影或投递下一份 partial；callback 进入 route `emit()` 后，`ReadableStream.desiredSize <= 0` 会等待下一次 `pull()`。这个保证只覆盖应用的消费与 NDJSON 投递边界，不保证 AI SDK、底层 HTTP 流或 provider 生成会同步减速；上游仍可能继续生成或在其内部缓冲，必须在目标部署环境实测。consumer 中断或回调失败时，迭代器清理也不会被随后读取 final output 的错误覆盖。原生分支让 AI SDK 按完整 `reportSchema` 产生 partial；prompted 分支则先用本地 deep-partial Zod schema 检查每个快照。尚未形成合法字段组合的 partial 会被跳过，而不会变成公开 delta；最终 output 无论来自哪个分支，都必须再通过完整 `reportSchema`。每个合法 partial object 才进入纯函数 `reportDraftToMarkdown()`，只按正式报告顺序投影已经存在的字段和已知引用编号，不补造字段、URL 或来源。
 
 partial structured output 通常只增长，但这不是协议保证。若新 Markdown 以旧值开头，`createReportDraftUpdate()` 只发送后缀 `append`；若模型修订了前文，则发送完整 `replace` snapshot；相同投影不发事件。Agent 只有在 route 确认交付后才递增从 0 开始的 `sequence`，因此客户端遇到重复、跳号或倒序时可以把它当作协议错误，而不是猜测性合并。错误会保留最后一版合法草稿，公开失败信息仍经过安全映射，原始 provider 输出、私有推理和修复提示不会进入 NDJSON。
 
@@ -268,7 +268,7 @@ partial stream 结束后先发 `report.validating`。只有最终结构化输出
 
 `ResearchModel` 把供应商能力压缩为四个领域操作：`generatePlan`、`evaluateSources`、`assessEvidence`、`generateReport`。`getResearchModelSelection()` 按 `AI_PROVIDER` 创建 Kimi 或 DeepSeek 的 OpenAI-compatible model，并始终把冻结的 `ModelCapabilities` 与模型一起返回。能力注册表按 `provider:model` 保存已经验证的协议能力；当前 `kimi:kimi-k2.6`、DeepSeek 和未知模型都显式采用保守的 `structuredOutputs: false`。只有通过请求体 wire contract 验证的模型才可切到 `true`，避免向不支持的 provider 发送 `json_schema`。
 
-plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonContract + Output.json`，由 `json_object` 保证 JSON 语法，再由领域 Zod schema 校验 shape；来源评估通过顶层 `evaluations` wrapper 生成后再解包。report 正常路径走一次 `streamText`：能力为 `true` 时使用 `Output.object({ schema: reportSchema })`，能力为 `false` 时使用同一 prompt contract 与 `Output.json()`，并以本地 deep-partial schema 过滤无效 partial、以完整 `reportSchema` 校验 final。`structured-output-strategy.test.ts` 直接断言两条分支的请求体分别为 `json_schema` 与 `json_object`，`index.test.ts` 验证 Kimi / DeepSeek capability 传播，防止仅凭 mock 结果误判协议兼容。
+plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonContract + Output.json()`，由 `json_object` 保证 JSON 语法，再由领域 Zod schema 校验 shape；来源评估通过顶层 `evaluations` wrapper 生成后再解包。report 正常路径走一次 `streamText`：能力为 `true` 时使用 `Output.object({ schema: reportSchema })`，能力为 `false` 时使用同一 prompt contract 与 `Output.json()`，并以本地 deep-partial schema 过滤无效 partial、以完整 `reportSchema` 校验 final。`structured-output-strategy.test.ts` 直接断言两条分支的请求体分别为 `json_schema` 与 `json_object`，`index.test.ts` 验证 Kimi / DeepSeek capability 传播，防止仅凭 mock 结果误判协议兼容。
 
 所有阶段保留显式 `maxOutputTokens`，initial 与 repair 沿用既有单次修复与阶段上限。事件编码仍拒绝超过 UTF-8 1 MiB 的单条记录，切换 provider 不改变工作流、事件和 UI 协议。若未来采用连续 DeepSeek thinking + tool-call loop，provider / message adapter 仍须保留协议要求的 `reasoning_content`，且不得写入 observable events。
 
@@ -288,7 +288,7 @@ plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonC
 
 客户端每次 start 都取消前一请求并使用 generation ID 忽略过期事件；显式 cancel 会终止 fetch。`lib/server/research-route.ts` 中由 `createResearchRoute()` 创建的 handler 把 `request.signal` 传播到 workflow controller，`runResearch` 再为每个模型 / Tavily operation 创建有超时的子 signal。ReadableStream consumer 主动取消时，handler 的 `cancel()` 同样中止 workflow controller。
 
-该 handler 在当前进程内的 `emit()` 遇到 `ReadableStream.desiredSize <= 0` 时等待 `pull()`，所以 runtime 能让慢 consumer 暂停下一事件，而不是无限入队。请求或 consumer 取消信号到达 handler 时，会拒绝等待者并中止 workflow；后续 `research.cancelled` 可以因客户端已断开而跳过，不会再创建 capacity waiter。反向代理、平台缓冲和 serverless 生命周期可能改变实际 streaming、断开传播与执行时限；目标部署必须单独验证 streaming、disconnect propagation 和 `maxDuration`。
+该 handler 在当前进程内的 `emit()` 遇到 `ReadableStream.desiredSize <= 0` 时等待 `pull()`，所以慢 consumer 能暂停应用投递下一事件，而不是让 route 无限入队。这仍是应用边界保证，不代表上游 SDK / HTTP / provider 同步停止生成或不做缓冲。请求或 consumer 取消信号到达 handler 时，会拒绝等待者并中止 workflow；后续 `research.cancelled` 可以因客户端已断开而跳过，不会再创建 capacity waiter。反向代理、平台缓冲和 serverless 生命周期可能改变实际 streaming、断开传播与执行时限；目标部署必须单独验证 streaming、disconnect propagation 和 `maxDuration`。
 
 当前 Demo 没有网关鉴权、用户级 rate limit、并发限制或付费 quota。对公网暴露模型与 Tavily 付费 API 前，必须先在可信网关补齐这些生产控制。本地 2026-07-16 Kimi + Tavily quick 路径已经实测真实草稿增长、最终 `report.completed`、原位正式替换和引用抽屉；DeepSeek、部署 runtime 保证与其他环境仍未验证。
 
