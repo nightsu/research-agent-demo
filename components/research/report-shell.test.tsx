@@ -26,5 +26,6 @@ describe("ReportShell", () => {
     );
     expect(article).toHaveAttribute("data-report-phase", "draft");
     expect(article).toHaveAttribute("aria-busy", "true");
+    expect(article).toHaveTextContent("Draft body");
   });
 });
