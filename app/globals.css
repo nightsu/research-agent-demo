@@ -274,7 +274,10 @@ textarea::placeholder { color: #8a918e; }
   line-height: inherit;
   text-transform: uppercase;
 }
-.research-report p, .research-report li { color: #35433f; }
+.research-report section p,
+.research-report section li,
+.streaming-report-draft-body p,
+.streaming-report-draft-body li { color: #35433f; }
 .research-report ul { padding-left: 20px; }
 .streaming-report-draft { overflow: visible; }
 .report-meta {
@@ -308,8 +311,6 @@ textarea::placeholder { color: #8a918e; }
   line-height: 1.16;
 }
 .streaming-report-draft-body h3 { margin: 24px 0 10px; font-size: 1.08rem; }
-.streaming-report-draft-body p,
-.streaming-report-draft-body li { color: #35433f; }
 .streaming-report-draft-body ul,
 .streaming-report-draft-body ol { padding-left: 22px; }
 .streaming-report-draft-body blockquote { margin-left: 0; padding-left: 18px; border-left: 3px solid var(--teal); color: var(--ink-muted); }

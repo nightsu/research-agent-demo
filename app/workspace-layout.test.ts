@@ -5,18 +5,26 @@ import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
-function ruleBody(selector: string, source = styles) {
+function ruleBodies(selector: string, source = styles) {
   // `@source "../node_modules/streamdown/dist/*.js"` 含有字面量 `/*`；只剥离由空白起始的真实 CSS 注释。
   const uncommentedSource = source.replace(/(^|\s)\/\*[\s\S]*?\*\//g, "$1");
   const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
+  const bodies: string[] = [];
   let match: RegExpExecArray | null;
 
   while ((match = rulePattern.exec(uncommentedSource)) !== null) {
     const selectors = match[1].split(",").map((entry) => entry.trim());
-    if (selectors.includes(selector)) return match[2];
+    if (selectors.includes(selector)) bodies.push(match[2]);
   }
 
-  expect.fail(`Missing CSS rule for ${selector}`);
+  return bodies;
+}
+
+function ruleBody(selector: string, source = styles) {
+  const [body] = ruleBodies(selector, source);
+
+  if (body === undefined) expect.fail(`Missing CSS rule for ${selector}`);
+  return body;
 }
 
 describe("desktop research workspace layout", () => {
@@ -85,11 +93,23 @@ describe("desktop research workspace layout", () => {
   });
 
   it("uses the final report surface and heading hierarchy for the streaming draft", () => {
-    const draft = ruleBody(".streaming-report-draft");
+    const draftSurface = [
+      ...ruleBodies(".streaming-report-draft"),
+      ...ruleBodies(".report-shell-draft"),
+    ].join("\n");
     const reportMeta = ruleBody(".report-meta");
+    const draftTitleLineHeights = ruleBodies(
+      ".streaming-report-draft-body h1",
+    ).flatMap((body) =>
+      Array.from(body.matchAll(/line-height:\s*([^;]+);/g), ([, value]) =>
+        value.trim(),
+      ),
+    );
 
     // 外壳尺寸只允许由 .research-report 定义，避免 Draft/Final 再次产生两套纸张。
-    expect(draft).not.toMatch(/(?:max-width|padding|border|border-radius|background)\s*:/);
+    expect(draftSurface).not.toMatch(
+      /(?:max-width|padding|border|border-radius|background)\s*:/,
+    );
     expect(reportMeta).toMatch(/display:\s*flex;/);
     expect(reportMeta).toMatch(/justify-content:\s*space-between;/);
     expect(styles).toMatch(
@@ -98,19 +118,37 @@ describe("desktop research workspace layout", () => {
     expect(styles).toMatch(
       /\.research-report\s+section\s*>\s*h3,\s*\.streaming-report-draft-body\s+h2\s*\{/,
     );
-    expect(styles).not.toMatch(
-      /\.streaming-report-draft-body\s+h1,\s*\.streaming-report-draft-body\s+h3\s*\{/,
-    );
+    expect(draftTitleLineHeights).toEqual(["1.05"]);
+  });
+
+  it("keeps report metadata colors separate from report body copy", () => {
+    expect(ruleBodies(".research-report p")).toHaveLength(0);
+    expect(ruleBodies(".research-report li")).toHaveLength(0);
+    expect(ruleBody(".research-report section p")).toMatch(/color:\s*#35433f;/);
+    expect(ruleBody(".research-report section li")).toMatch(/color:\s*#35433f;/);
+    expect(ruleBody(".streaming-report-draft-body p")).toMatch(/color:\s*#35433f;/);
+    expect(ruleBody(".streaming-report-draft-body li")).toMatch(/color:\s*#35433f;/);
+    expect(ruleBody(".eyebrow")).toMatch(/color:\s*var\(--teal\);/);
+    expect(ruleBody(".draft-status")).toMatch(/color:\s*var\(--teal-dark\);/);
+    expect(ruleBody(".draft-status-validating")).toMatch(/color:\s*#72581d;/);
+    expect(ruleBody(".draft-status-repairing")).toMatch(/color:\s*#72581d;/);
+    expect(ruleBody(".draft-status-incomplete")).toMatch(/color:\s*var\(--danger\);/);
   });
 
   it("uses document scrolling and a fixed latest button on mobile", () => {
     const mobileStart = styles.indexOf("@media (max-width: 960px)");
     const mobileEnd = styles.indexOf("@media (max-width: 640px)");
     const mobileStyles = styles.slice(mobileStart, mobileEnd);
+    const narrowMobileEnd = styles.indexOf("@media (prefers-reduced-motion: reduce)");
+    const narrowMobileStyles = styles.slice(mobileEnd, narrowMobileEnd);
+    const mobileReportMeta = ruleBody(".report-meta", narrowMobileStyles);
 
     expect(ruleBody(".workspace-content", mobileStyles)).toMatch(/overflow:\s*visible;/);
     expect(ruleBody(".latest-button", mobileStyles)).toMatch(/position:\s*fixed;/);
     expect(ruleBody(".latest-button", mobileStyles)).toMatch(/z-index:\s*\d+;/);
+    expect(mobileReportMeta).toMatch(/align-items:\s*flex-start;/);
+    expect(mobileReportMeta).toMatch(/flex-direction:\s*column;/);
+    expect(mobileReportMeta).toMatch(/gap:\s*10px;/);
   });
 
   it("fully disables streaming-draft motion when reduced motion is requested", () => {
