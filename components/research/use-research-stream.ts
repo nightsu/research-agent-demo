@@ -147,7 +147,7 @@ function reducer(state: State, action: Action): State {
     return {
       ...state,
       status: "failed",
-      // 客户端只能合成固定、已清洗的公开消息；若服务端已发终止事件，仅更新状态而不追加。
+      // 尚无服务端终态时，客户端只合成固定、已清洗的本地 research.failed 事件。
       events: state.events.some(isTerminal)
         ? state.events
         : [...state.events, event],
