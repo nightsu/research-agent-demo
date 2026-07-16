@@ -8,6 +8,7 @@ import {
   type StreamdownProps,
 } from "streamdown";
 
+import { ReportShell } from "./report-shell";
 import type { ReportDraftState } from "./use-research-stream";
 
 export interface StreamingReportDraftProps {
@@ -92,11 +93,19 @@ export function StreamingReportDraft({ draft }: StreamingReportDraftProps) {
   const isBusy = draft.status !== "incomplete";
 
   return (
-    <article className="streaming-report-draft" aria-busy={isBusy}>
-      {/* 正文和本地状态都不 live announce；由 Workbench 的单一状态区统一播报，避免重复。 */}
-      <p className={`draft-status draft-status-${draft.status}`}>
-        {draftStatusText[draft.status]}
-      </p>
+    <ReportShell
+      phase="draft"
+      className="streaming-report-draft"
+      aria-label="Research report draft"
+      aria-busy={isBusy}
+    >
+      {/* 正式稿和草稿共享同一元信息起点，完成替换时不会像换了一张纸。 */}
+      <div className="report-meta">
+        <p className="eyebrow">Research report</p>
+        <p className={`draft-status draft-status-${draft.status}`}>
+          {draftStatusText[draft.status]}
+        </p>
+      </div>
       <Streamdown
         className="streaming-report-draft-body"
         mode="streaming"
@@ -109,6 +118,6 @@ export function StreamingReportDraft({ draft }: StreamingReportDraftProps) {
       >
         {draft.markdown}
       </Streamdown>
-    </article>
+    </ReportShell>
   );
 }

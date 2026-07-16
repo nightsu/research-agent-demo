@@ -45,10 +45,17 @@ describe("StreamingReportDraft", () => {
     const { rerender } = render(<StreamingReportDraft draft={streamingDraft} />);
     const article = screen.getByRole("article");
 
-    expect(article).toHaveClass("streaming-report-draft");
+    expect(article).toHaveClass(
+      "research-report",
+      "report-shell-draft",
+      "streaming-report-draft",
+    );
+    expect(article).toHaveAttribute("data-report-phase", "draft");
+    expect(article).toHaveAttribute("aria-label", "Research report draft");
     expect(article).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByText("Research report")).toHaveClass("eyebrow");
+    expect(screen.getByText("正在生成报告草稿").closest(".report-meta")).toBeVisible();
     expect(article).not.toHaveAttribute("aria-live");
-    expect(screen.getByText("正在生成报告草稿")).toBeVisible();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(article.querySelector("[aria-live]")).not.toBeInTheDocument();
     expect(lastStreamdownProps()).toMatchObject({
