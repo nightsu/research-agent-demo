@@ -1,10 +1,8 @@
+import type { DeepPartial } from "ai";
+
 import type { ResearchReport } from "./research-types";
 
-export type PartialResearchReport = {
-  [Key in keyof ResearchReport]?: Key extends "findings"
-    ? Array<Partial<ResearchReport["findings"][number]>>
-    : ResearchReport[Key];
-};
+export type PartialResearchReport = DeepPartial<ResearchReport>;
 
 export type ReportDraftUpdate = {
   mode: "append" | "replace";
@@ -13,8 +11,11 @@ export type ReportDraftUpdate = {
 
 type CitationMap = ReadonlyMap<string, number>;
 
-function renderListSection(heading: string, items: string[] | undefined): string | undefined {
-  const renderedItems = items?.filter((item) => item.length > 0);
+function renderListSection(
+  heading: string,
+  items: ReadonlyArray<string | undefined> | undefined,
+): string | undefined {
+  const renderedItems = items?.filter((item): item is string => Boolean(item));
   if (!renderedItems?.length) {
     return undefined;
   }
@@ -37,16 +38,25 @@ export function reportDraftToMarkdown(
   }
 
   const findings = partial.findings
-    ?.filter((finding): finding is typeof finding & { claim: string } => Boolean(finding.claim))
+    // AI SDK 的 DeepPartial 会在数组槽位和对象字段尚未生成时放入 undefined，投影边界必须逐层收窄。
+    ?.filter((finding): finding is NonNullable<typeof finding> & { claim: string } => (
+      Boolean(finding?.claim)
+    ))
     .map((finding) => {
       const citations = finding.sourceIds
         ?.flatMap((sourceId) => {
+          if (sourceId === undefined) {
+            return [];
+          }
           const citation = citationMap.get(sourceId);
           return citation === undefined ? [] : [`[${citation}]`];
         })
         .join(" ");
+      const confidence = finding.confidence
+        ? ` (confidence: ${finding.confidence})`
+        : "";
 
-      return citations ? `${finding.claim} ${citations}` : finding.claim;
+      return `${finding.claim}${confidence}${citations ? ` ${citations}` : ""}`;
     });
 
   sections.push(renderListSection("Key findings", findings));

@@ -37,7 +37,7 @@ describe("report draft projection", () => {
       "",
       "## Key findings",
       "",
-      "- Official docs describe tool-assisted research. [2]",
+      "- Official docs describe tool-assisted research. (confidence: high) [2]",
       "- A finding can arrive before its citations.",
       "",
       "## Trends",
@@ -58,6 +58,32 @@ describe("report draft projection", () => {
     expect(reportDraftToMarkdown({ title: "Research agents" }, new Map())).toBe(
       "# Research agents",
     );
+  });
+
+  it("safely projects deeply partial arrays and nested finding fields", () => {
+    const partial: PartialResearchReport = {
+      findings: [
+        undefined,
+        {
+          claim: "The draft can contain sparse nested values.",
+          confidence: "medium",
+          sourceIds: [undefined, "source-1"],
+        },
+      ],
+      trends: [undefined, "Observable workflows are becoming common."],
+      disagreements: [undefined],
+      limitations: [undefined],
+    };
+
+    expect(reportDraftToMarkdown(partial, new Map([["source-1", 1]]))).toBe([
+      "## Key findings",
+      "",
+      "- The draft can contain sparse nested values. (confidence: medium) [1]",
+      "",
+      "## Trends",
+      "",
+      "- Observable workflows are becoming common.",
+    ].join("\n"));
   });
 });
 
