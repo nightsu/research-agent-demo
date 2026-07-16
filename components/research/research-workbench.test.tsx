@@ -103,6 +103,33 @@ function defineWorkspaceScroll(viewport: HTMLElement, scrollTop = 690) {
   return scrollTo;
 }
 
+function defineMobileDocumentScroll(scrollTop = 700) {
+  vi.stubGlobal("innerWidth", 900);
+  vi.stubGlobal("matchMedia", vi.fn(() => ({
+    matches: true,
+    media: "(max-width: 960px)",
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+  const scrollingElement = document.documentElement;
+  Object.defineProperties(scrollingElement, {
+    scrollHeight: { configurable: true, value: 1200 },
+    clientHeight: { configurable: true, value: 400 },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+  Object.defineProperty(document, "scrollingElement", {
+    configurable: true,
+    value: scrollingElement,
+  });
+  const scrollTo = vi.fn();
+  vi.stubGlobal("scrollTo", scrollTo);
+  return { scrollingElement, scrollTo };
+}
+
 vi.mock("./use-research-stream", () => ({
   useResearchStream: () => ({ run: mockedRun, start, cancel, reset, retry, canRetry: true }),
 }));
@@ -118,6 +145,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("ResearchForm", () => {
@@ -709,6 +737,118 @@ describe("ResearchWorkbench", () => {
     mockedRun = { status: "idle", events: [], hadReportDraft: false };
     rerender(<ResearchWorkbench />);
     expect(screen.getByRole("form", { name: /start research/i })).toBeInTheDocument();
+  });
+
+  it("uses the document scroll owner to position a newly started report on mobile", () => {
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(120);
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const workspaceScrollTo = defineWorkspaceScroll(viewport);
+    const documentWrapper = viewport.firstElementChild as HTMLElement;
+    vi.spyOn(documentWrapper, "getBoundingClientRect").mockReturnValue({
+      top: 250,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 250,
+      toJSON: () => ({}),
+    });
+
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
+    rerender(<ResearchWorkbench />);
+
+    expect(windowScrollTo).toHaveBeenCalledWith({ top: 370, behavior: "auto" });
+    expect(workspaceScrollTo).not.toHaveBeenCalled();
+    expect(scrollingElement.scrollTop).toBe(120);
+  });
+
+  it("pauses mobile document following and resumes at the document bottom", () => {
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(200);
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    windowScrollTo.mockClear();
+
+    fireEvent.scroll(window);
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" }],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
+    expect(windowScrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest report/i }));
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: scrollingElement.scrollHeight,
+      behavior: "auto",
+    });
+    expect(screen.queryByRole("button", { name: /back to latest report/i })).not.toBeInTheDocument();
+  });
+
+  it("follows mobile draft resize at document bottom but preserves position on formal replacement", () => {
+    let notifyResize: ResizeObserverCallback = () => undefined;
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(790);
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" }],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
+    windowScrollTo.mockClear();
+    Object.defineProperty(scrollingElement, "scrollHeight", { configurable: true, value: 1500 });
+    act(() => notifyResize([], {} as ResizeObserver));
+    expect(windowScrollTo).toHaveBeenCalledWith({ top: 1500, behavior: "auto" });
+
+    windowScrollTo.mockClear();
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: true };
+    rerender(<ResearchWorkbench />);
+    expect(windowScrollTo).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the mobile window scroll listener", () => {
+    defineMobileDocumentScroll();
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+    mockedRun = { status: "running", events: [] };
+    const { unmount } = render(<ResearchWorkbench />);
+    const scrollListener = addEventListener.mock.calls.find(([type]) => type === "scroll")?.[1];
+
+    expect(scrollListener).toBeTypeOf("function");
+    unmount();
+    expect(removeEventListener).toHaveBeenCalledWith("scroll", scrollListener);
   });
 });
 

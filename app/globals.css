@@ -340,6 +340,7 @@ textarea::placeholder { color: #8a918e; }
   .workspace-grid { grid-template-columns: 1fr; }
   .workspace-content-shell { height: auto; }
   .workspace-content { height: auto; overflow: visible; padding-right: 0; }
+  .latest-button { position: fixed; z-index: 20; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); }
   .progress-panel { position: static; height: auto; overflow: visible; }
   .phase-list { grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .phase { min-height: auto; }

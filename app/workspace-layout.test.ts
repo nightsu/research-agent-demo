@@ -84,6 +84,16 @@ describe("desktop research workspace layout", () => {
     );
   });
 
+  it("uses document scrolling and a fixed latest button on mobile", () => {
+    const mobileStart = styles.indexOf("@media (max-width: 960px)");
+    const mobileEnd = styles.indexOf("@media (max-width: 640px)");
+    const mobileStyles = styles.slice(mobileStart, mobileEnd);
+
+    expect(ruleBody(".workspace-content", mobileStyles)).toMatch(/overflow:\s*visible;/);
+    expect(ruleBody(".latest-button", mobileStyles)).toMatch(/position:\s*fixed;/);
+    expect(ruleBody(".latest-button", mobileStyles)).toMatch(/z-index:\s*\d+;/);
+  });
+
   it("fully disables streaming-draft motion when reduced motion is requested", () => {
     const reducedMotionStart = styles.indexOf("@media (prefers-reduced-motion: reduce)");
     const reducedMotionStyles = styles.slice(reducedMotionStart);

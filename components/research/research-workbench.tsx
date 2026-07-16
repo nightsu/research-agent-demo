@@ -13,6 +13,39 @@ import { StreamingReportDraft } from "./streaming-report-draft";
 import { useResearchStream, type ResearchRunStatus } from "./use-research-stream";
 
 const BOTTOM_THRESHOLD_PX = 48;
+const MOBILE_SCROLL_QUERY = "(max-width: 960px)";
+
+interface ScrollOwner {
+  kind: "workspace" | "document";
+  metrics: { scrollTop: number; scrollHeight: number; clientHeight: number };
+  scrollTo(top: number): void;
+}
+
+function getResponsiveScrollOwner(workspace: HTMLDivElement | null): ScrollOwner | undefined {
+  const mobile = typeof window.matchMedia === "function" && window.matchMedia(MOBILE_SCROLL_QUERY).matches;
+  if (mobile) {
+    const scrollingElement = document.scrollingElement ?? document.documentElement;
+    return {
+      kind: "document",
+      metrics: {
+        scrollTop: scrollingElement.scrollTop,
+        scrollHeight: scrollingElement.scrollHeight,
+        clientHeight: scrollingElement.clientHeight,
+      },
+      scrollTo: (top) => window.scrollTo({ top, behavior: "auto" }),
+    };
+  }
+  if (!workspace) return undefined;
+  return {
+    kind: "workspace",
+    metrics: {
+      scrollTop: workspace.scrollTop,
+      scrollHeight: workspace.scrollHeight,
+      clientHeight: workspace.clientHeight,
+    },
+    scrollTo: (top) => workspace.scrollTo?.({ top, behavior: "auto" }),
+  };
+}
 
 export function ResearchWorkbench() {
   const { run, start, retry, canRetry, cancel, reset } = useResearchStream();
@@ -35,20 +68,30 @@ export function ResearchWorkbench() {
   const reportSurface = run.reportDraft !== undefined || view.report !== undefined;
   const selectedIdentity = selectedSourceId ? (view.sourceIdentityById.get(selectedSourceId) ?? selectedSourceId) : undefined;
   const selectedSource = view.sources.find((source) => source.id === selectedIdentity);
-  const scrollWorkspace = useCallback((top: number) => {
-    workspaceRef.current?.scrollTo?.({ top, behavior: "auto" });
+  const scrollOwnerToBottom = useCallback(() => {
+    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    if (owner) owner.scrollTo(owner.metrics.scrollHeight);
   }, []);
-  const updateFollowingFromScrollPosition = useCallback((viewport = workspaceRef.current) => {
-    if (!viewport) return;
+  const scrollReportSurfaceToTop = useCallback(() => {
+    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    if (!owner) return;
+    const top = owner.kind === "document"
+      ? (workspaceDocumentRef.current?.getBoundingClientRect().top ?? 0) + owner.metrics.scrollTop
+      : 0;
+    owner.scrollTo(top);
+  }, []);
+  const updateFollowingFromScrollPosition = useCallback(() => {
+    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    if (!owner) return;
+    const { scrollHeight, scrollTop, clientHeight } = owner.metrics;
     setFollowingLatest(
-      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX,
+      scrollHeight - scrollTop - clientHeight <= BOTTOM_THRESHOLD_PX,
     );
   }, []);
   const resumeFollowing = useCallback(() => {
     setFollowingLatest(true);
-    const viewport = workspaceRef.current;
-    if (viewport) scrollWorkspace(viewport.scrollHeight);
-  }, [scrollWorkspace]);
+    scrollOwnerToBottom();
+  }, [scrollOwnerToBottom]);
 
   useLayoutEffect(() => {
     followingLatestRef.current = followingLatest;
@@ -65,11 +108,10 @@ export function ResearchWorkbench() {
 
     if (enteredReportSurface) {
       // 报告从 started 起就是主阅读面；每代研究只在首次进入时定位顶部。
-      scrollWorkspace(0);
+      scrollReportSurfaceToTop();
     } else if (followingLatest && (draftGrew || processGrew)) {
       // 跟随仅负责展示位置，不能参与事件消费或业务阶段推进。
-      const viewport = workspaceRef.current;
-      if (viewport) scrollWorkspace(viewport.scrollHeight);
+      scrollOwnerToBottom();
     }
 
     draftGrowthAwaitingResize.current = draftGrew && followingLatest;
@@ -77,7 +119,18 @@ export function ResearchWorkbench() {
     previousEventCount.current = run.events.length;
     previousDraftSequence.current = run.reportDraft?.sequence;
     previousDraftLength.current = run.reportDraft?.markdown.length;
-  }, [followingLatest, reportSurface, run.events.length, run.reportDraft, scrollWorkspace]);
+  }, [followingLatest, reportSurface, run.events.length, run.reportDraft, scrollOwnerToBottom, scrollReportSurfaceToTop]);
+
+  useEffect(() => {
+    const onWindowScroll = () => {
+      if (typeof window.matchMedia === "function" && window.matchMedia(MOBILE_SCROLL_QUERY).matches) {
+        updateFollowingFromScrollPosition();
+      }
+    };
+    // CSS 在窄屏把纵向滚动交还 document；监听 window 不代表创建第二个滚动 owner。
+    window.addEventListener("scroll", onWindowScroll);
+    return () => window.removeEventListener("scroll", onWindowScroll);
+  }, [updateFollowingFromScrollPosition]);
 
   useEffect(() => {
     const workspaceDocument = workspaceDocumentRef.current;
@@ -85,15 +138,13 @@ export function ResearchWorkbench() {
 
     // 展开 details 会改变文档高度，却不会触发滚动事件；观察文档流才能及时暂停错误的“跟随最新”。
     const observer = new ResizeObserver(() => {
-      const viewport = workspaceRef.current;
       if (
-        viewport &&
         reportDraftRef.current &&
         followingLatestRef.current &&
         draftGrowthAwaitingResize.current
       ) {
-        // Markdown 排版后的真实高度可能晚于提交变化；仍由右侧唯一滚动容器跟到底部。
-        scrollWorkspace(viewport.scrollHeight);
+        // Markdown 排版后的真实高度可能晚于提交变化；按断点使用当下唯一的纵向滚动 owner。
+        scrollOwnerToBottom();
         draftGrowthAwaitingResize.current = false;
         return;
       }
@@ -101,7 +152,7 @@ export function ResearchWorkbench() {
     });
     observer.observe(workspaceDocument);
     return () => observer.disconnect();
-  }, [run.status, scrollWorkspace, updateFollowingFromScrollPosition]);
+  }, [run.status, scrollOwnerToBottom, updateFollowingFromScrollPosition]);
 
   useEffect(() => {
     if (previousStatus.current === "running" && run.status === "cancelled") statusRef.current?.focus();
@@ -133,7 +184,7 @@ export function ResearchWorkbench() {
             className="workspace-content"
             role="region"
             aria-label="Research workspace content"
-            onScroll={(event) => updateFollowingFromScrollPosition(event.currentTarget)}
+            onScroll={updateFollowingFromScrollPosition}
           >
             <div ref={workspaceDocumentRef}>
               {reportSurface ? (
