@@ -322,6 +322,35 @@ describe("structured research model", () => {
   });
 
   it.each([
+    ["transport", new Error("repair transport failed")],
+    ["abort", new DOMException("repair aborted", "AbortError")],
+  ])("preserves a %s failure from the hidden report repair", async (_label, repairFailure) => {
+    const structuredFailure = Object.assign(new Error("invalid final structure"), {
+      [Symbol.for("vercel.ai.error.AI_NoObjectGeneratedError")]: true,
+    });
+    streamText.mockReturnValueOnce(
+      reportStream([], Promise.reject(structuredFailure)),
+    );
+    generateText.mockRejectedValueOnce(repairFailure);
+    const onRepairing = vi.fn();
+    const onModelCall = vi.fn();
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { onRepairing, onModelCall },
+    );
+
+    await expect(operation).rejects.toBe(repairFailure);
+    expect(onRepairing).toHaveBeenCalledOnce();
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).toHaveBeenCalledOnce();
+    expect(onModelCall).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
     ["transport", new Error("raw transport details")],
     ["authentication", new Error("raw authentication details")],
     ["rate limit", new Error("raw rate-limit details")],

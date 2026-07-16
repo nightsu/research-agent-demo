@@ -302,6 +302,10 @@ async function generateStreamingReport(
         (output) => validateReportCitations(sources, evaluations, output),
       );
     } catch (repairError) {
+      if (!isRepairableStructuredOutputError(repairError)) {
+        throw repairError;
+      }
+
       throw new AggregateError(
         [initialError, repairError],
         "Structured generation failed after one repair attempt",
