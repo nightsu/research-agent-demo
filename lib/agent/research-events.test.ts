@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   decodeEventLine,
   encodeEvent,
+  MAX_ENCODED_EVENT_BYTES,
   researchEventSchema,
   type ResearchEvent,
 } from "./research-events";
@@ -64,6 +65,9 @@ const validEvents: ResearchEvent[] = [
   { type: "gap.detected", description: "Pricing is unclear", followUpQueries: ["Kimi agent pricing"] },
   { type: "conclusion.updated", summary: "Kimi provides agent tools." },
   { type: "report.started", partial: false },
+  { type: "report.delta", sequence: 0, mode: "append", text: "# Kimi agents" },
+  { type: "report.validating" },
+  { type: "report.repairing" },
   { type: "report.completed", report },
   { type: "research.partial", report, reason: "One source was unavailable" },
   { type: "research.cancelled" },
@@ -88,6 +92,27 @@ describe("research event protocol", () => {
 
   it("rejects private reasoning events", () => {
     expect(() => researchEventSchema.parse({ type: "private.reasoning" })).toThrow();
+  });
+
+  it.each([
+    { type: "report.delta", sequence: 0, mode: "append", text: "More" },
+    { type: "report.delta", sequence: 12, mode: "replace", text: "# Revised" },
+    { type: "report.validating" },
+    { type: "report.repairing" },
+  ])("accepts a strict streaming report event: $type", (event) => {
+    expect(researchEventSchema.parse(event)).toEqual(event);
+  });
+
+  it.each([
+    ["negative sequence", { type: "report.delta", sequence: -1, mode: "append", text: "More" }],
+    ["non-integer sequence", { type: "report.delta", sequence: 0.5, mode: "append", text: "More" }],
+    ["invalid mode", { type: "report.delta", sequence: 0, mode: "patch", text: "More" }],
+    ["empty text", { type: "report.delta", sequence: 0, mode: "append", text: "" }],
+    ["private field", { type: "report.delta", sequence: 0, mode: "append", text: "More", privateThought: "hidden" }],
+    ["validating payload", { type: "report.validating", sequence: 0 }],
+    ["repairing payload", { type: "report.repairing", privateThought: "hidden" }],
+  ])("rejects an invalid streaming report event with %s", (_label, event) => {
+    expect(() => researchEventSchema.parse(event)).toThrow();
   });
 
   it.each([
@@ -183,6 +208,17 @@ describe("research event protocol", () => {
     expect(() => encodeEvent(oversized)).toThrow(/event.*size/i);
   });
 
+  it("applies the encoded byte limit to report deltas", () => {
+    const oversized = {
+      type: "report.delta",
+      sequence: 0,
+      mode: "append",
+      text: "研".repeat(MAX_ENCODED_EVENT_BYTES),
+    } as ResearchEvent;
+
+    expect(() => encodeEvent(oversized)).toThrow(/event.*size/i);
+  });
+
   it.each([
     ["plan.started", { type: "plan.started", question: 42 }],
     ["progress.updated", { type: "progress.updated", operationCount: 0, operationLimit: 1, searchRounds: 0 }],
@@ -194,6 +230,7 @@ describe("research event protocol", () => {
     ["gap.detected", { type: "gap.detected", description: "missing", followUpQueries: ["one", "two", "three", "four"] }],
     ["conclusion.updated", { type: "conclusion.updated", summary: "" }],
     ["report.started", { type: "report.started", partial: "false" }],
+    ["report.delta", { type: "report.delta", sequence: 0, mode: "append", text: "" }],
     ["report.completed", { type: "report.completed", report: { ...report, findings: "invalid" } }],
     ["research.partial", { type: "research.partial", report, reason: "" }],
     ["research.failed", { type: "research.failed", message: "", recoverable: "yes" }],

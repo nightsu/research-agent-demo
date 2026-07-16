@@ -53,6 +53,9 @@ export function eventStatusLabel(event?: ResearchEvent): string {
     case "gap.detected": return "Evidence gap detected";
     case "conclusion.updated": return "Conclusion updated";
     case "report.started": return event.partial ? "Partial report started" : "Report synthesis running";
+    case "report.delta": return "Report draft updated";
+    case "report.validating": return "Report validating";
+    case "report.repairing": return "Report repairing";
     case "report.completed": return "Report completed";
     case "research.partial": return "Partial research completed";
     case "research.cancelled": return "Research cancelled";
@@ -81,7 +84,10 @@ function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
     case "source.read":
     case "source.evaluated":
     case "conclusion.updated": return "evaluating";
-    case "report.started": return "synthesizing";
+    case "report.started":
+    case "report.delta":
+    case "report.validating":
+    case "report.repairing": return "synthesizing";
     case "report.completed":
     case "research.partial":
     case "research.cancelled":

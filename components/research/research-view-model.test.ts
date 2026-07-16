@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ResearchEvent } from "@/lib/agent/research-events";
 import type { Source, SourceEvaluation } from "@/lib/agent/research-types";
 
-import { deriveResearchViewModel } from "./research-view-model";
+import { deriveResearchViewModel, eventStatusLabel } from "./research-view-model";
 
 const sourceA: Source = {
   id: "a",
@@ -42,6 +42,22 @@ function evaluated(
 }
 
 describe("deriveResearchViewModel", () => {
+  it.each([
+    [{ type: "report.delta", sequence: 0, mode: "append", text: "# Draft" } as const, "Report draft updated"],
+    [{ type: "report.validating" } as const, "Report validating"],
+    [{ type: "report.repairing" } as const, "Report repairing"],
+  ])("labels $event.type as a public report status", (event, label) => {
+    expect(eventStatusLabel(event)).toBe(label);
+  });
+
+  it.each([
+    { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" } as const,
+    { type: "report.validating" } as const,
+    { type: "report.repairing" } as const,
+  ])("keeps $type in the synthesizing phase", (event) => {
+    expect(deriveResearchViewModel([event]).currentPhase).toBe("synthesizing");
+  });
+
   it("counts the latest accepted decisions across repeated search rounds", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), search([sourceA, sourceB]), evaluated("a", "accepted"), evaluated("b", "accepted")],
