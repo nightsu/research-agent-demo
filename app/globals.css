@@ -308,6 +308,7 @@ textarea::placeholder { color: #8a918e; }
   overflow-x: auto;
   overflow-y: clip;
 }
+.streaming-report-draft-table:focus-visible { outline: 3px solid rgba(49, 95, 132, 0.48); outline-offset: 3px; }
 .streaming-report-draft-table table { width: 100%; border-collapse: collapse; }
 .streaming-report-draft-table th,
 .streaming-report-draft-table td { border: 1px solid var(--line); padding: 9px 12px; text-align: left; }

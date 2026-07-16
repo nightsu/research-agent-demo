@@ -79,6 +79,9 @@ describe("desktop research workspace layout", () => {
     expect(draftTable).toMatch(/overflow-y:\s*clip;/);
     expect(draftTable).not.toMatch(/(?:height|max-height)\s*:/);
     expect(draftTable).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(ruleBody(".streaming-report-draft-table:focus-visible")).toMatch(
+      /outline:\s*3px\s+solid/,
+    );
   });
 
   it("fully disables streaming-draft motion when reduced motion is requested", () => {
