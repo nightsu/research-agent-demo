@@ -98,6 +98,9 @@ describe("desktop research workspace layout", () => {
     expect(styles).toMatch(
       /\.research-report\s+section\s*>\s*h3,\s*\.streaming-report-draft-body\s+h2\s*\{/,
     );
+    expect(styles).not.toMatch(
+      /\.streaming-report-draft-body\s+h1,\s*\.streaming-report-draft-body\s+h3\s*\{/,
+    );
   });
 
   it("uses document scrolling and a fixed latest button on mobile", () => {

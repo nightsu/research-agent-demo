@@ -302,7 +302,6 @@ textarea::placeholder { color: #8a918e; }
   color: #35433f;
   overflow-wrap: anywhere;
 }
-.streaming-report-draft-body h1,
 .streaming-report-draft-body h3 {
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 500;
