@@ -10,6 +10,7 @@ import {
   type ResearchPlan,
   type Source,
 } from "../agent/research-types";
+import type { PartialResearchReport } from "../agent/report-draft";
 import {
   RESEARCH_SYSTEM_PROMPT,
   evidencePrompt,
@@ -18,10 +19,12 @@ import {
   sourceEvaluationPrompt,
 } from "../agent/prompts";
 
-const { generateText, getResearchModel, jsonOutput } = vi.hoisted(() => ({
+const { generateText, streamText, getResearchModel, jsonOutput, objectOutput } = vi.hoisted(() => ({
   generateText: vi.fn(),
+  streamText: vi.fn(),
   getResearchModel: vi.fn(),
   jsonOutput: vi.fn(() => ({ kind: "json" })),
+  objectOutput: vi.fn((options) => ({ kind: "object", ...options })),
 }));
 
 vi.mock("ai", async (importOriginal) => {
@@ -30,7 +33,8 @@ vi.mock("ai", async (importOriginal) => {
   return {
     ...actual,
     generateText,
-    Output: { json: jsonOutput },
+    streamText,
+    Output: { json: jsonOutput, object: objectOutput },
   };
 });
 
@@ -114,11 +118,34 @@ function parseOutputJsonSchema(prompt: string): Record<string, unknown> {
   >;
 }
 
+async function* controlledAsyncIterable<T>(
+  values: T[],
+  events: string[] = [],
+): AsyncIterable<T> {
+  for (const [index, value] of values.entries()) {
+    events.push(`yield:${index}`);
+    yield value;
+    events.push(`resume:${index}`);
+  }
+}
+
+function reportStream(
+  partials: PartialResearchReport[],
+  finalOutput: PromiseLike<typeof report> = Promise.resolve(report),
+) {
+  return {
+    partialOutputStream: controlledAsyncIterable(partials),
+    output: finalOutput,
+  };
+}
+
 describe("structured research model", () => {
   beforeEach(() => {
     generateText.mockReset();
+    streamText.mockReset();
     getResearchModel.mockReset().mockReturnValue(selectedModel);
     jsonOutput.mockClear();
+    objectOutput.mockClear();
   });
 
   it.each([
@@ -146,21 +173,6 @@ describe("structured research model", () => {
       topLevelKeys: ["sufficient", "summary", "gaps", "followUpQueries"],
       promptFragments: [question, "source-kimi", "source-deepseek"],
     },
-    {
-      method: "generateReport" as const,
-      providerOutput: report,
-      publicResult: report,
-      schema: reportSchema,
-      topLevelKeys: [
-        "title",
-        "executiveSummary",
-        "findings",
-        "trends",
-        "disagreements",
-        "limitations",
-      ],
-      promptFragments: [question, "source-kimi", "source-deepseek"],
-    },
   ])("$method uses the selected model, schema, and focused prompt", async ({
     method,
     providerOutput,
@@ -177,14 +189,7 @@ describe("structured research model", () => {
         ? await researchModel.generatePlan(question)
         : method === "evaluateSources"
           ? await researchModel.evaluateSources(question, sources)
-          : method === "assessEvidence"
-            ? await researchModel.assessEvidence(question, sources, evaluations)
-            : await researchModel.generateReport(
-                question,
-                sources,
-                evaluations,
-                true,
-              );
+          : await researchModel.assessEvidence(question, sources, evaluations);
 
     expect(result).toEqual(publicResult);
     expect(getResearchModel).toHaveBeenCalledTimes(1);
@@ -199,7 +204,6 @@ describe("structured research model", () => {
       generatePlan: 2_500,
       evaluateSources: 6_000,
       assessEvidence: 2_500,
-      generateReport: 12_000,
     }[method]);
     for (const fragment of promptFragments) {
       expect(request.prompt).toContain(fragment);
@@ -217,6 +221,134 @@ describe("structured research model", () => {
     );
     const outputSchema = parseOutputJsonSchema(request.prompt);
     expect(Object.keys(outputSchema.properties as object)).toEqual(topLevelKeys);
+  });
+
+  it("streams structured report snapshots with callback backpressure before validating", async () => {
+    const partials: PartialResearchReport[] = [
+      { title: "Streaming" },
+      {
+        title: "Streaming reports",
+        executiveSummary: "The report grows while the model runs.",
+      },
+    ];
+    const events: string[] = [];
+    const received: PartialResearchReport[] = [];
+    streamText.mockReturnValueOnce({
+      partialOutputStream: controlledAsyncIterable(partials, events),
+      output: Promise.resolve(report),
+    });
+    const onPartialReport = vi.fn(async (partial: PartialResearchReport) => {
+      events.push(`callback:start:${partial.title}`);
+      await Promise.resolve();
+      received.push(partial);
+      events.push(`callback:end:${partial.title}`);
+    });
+    const onValidating = vi.fn(() => {
+      events.push("validating");
+    });
+    const onModelCall = vi.fn();
+
+    const result = await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      true,
+      { onPartialReport, onValidating, onModelCall },
+    );
+
+    expect(result).toEqual(report);
+    expect(received).toEqual(partials);
+    expect(onPartialReport).toHaveBeenCalledTimes(2);
+    expect(onValidating).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      "yield:0",
+      "callback:start:Streaming",
+      "callback:end:Streaming",
+      "resume:0",
+      "yield:1",
+      "callback:start:Streaming reports",
+      "callback:end:Streaming reports",
+      "resume:1",
+      "validating",
+    ]);
+    expect(streamText).toHaveBeenCalledTimes(1);
+    expect(generateText).not.toHaveBeenCalled();
+    expect(onModelCall).toHaveBeenCalledTimes(1);
+    expect(objectOutput).toHaveBeenCalledWith({ schema: reportSchema });
+    const request = streamText.mock.calls[0][0];
+    expect(request).toMatchObject({
+      model: selectedModel,
+      system: RESEARCH_SYSTEM_PROMPT,
+      maxOutputTokens: 12_000,
+    });
+    expect(request.output).toEqual({ kind: "object", schema: reportSchema });
+    expect(request.prompt).toContain(question);
+    expect(request.prompt).toContain("source-kimi");
+    expect(request.prompt).toContain("source-deepseek");
+  });
+
+  it("repairs one final structured report failure without streaming the repair", async () => {
+    const structuredFailure = Object.assign(new Error("raw malformed provider output"), {
+      [Symbol.for("vercel.ai.error.AI_NoObjectGeneratedError")]: true,
+    });
+    streamText.mockReturnValueOnce(
+      reportStream([{ title: "Visible draft" }], Promise.reject(structuredFailure)),
+    );
+    generateText.mockResolvedValueOnce({ output: report });
+    const onPartialReport = vi.fn();
+    const onValidating = vi.fn();
+    const onRepairing = vi.fn();
+    const onModelCall = vi.fn();
+
+    const result = await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { onPartialReport, onValidating, onRepairing, onModelCall },
+    );
+
+    expect(result).toEqual(report);
+    expect(onPartialReport).toHaveBeenCalledOnce();
+    expect(onPartialReport).toHaveBeenCalledWith({ title: "Visible draft" });
+    expect(onValidating).toHaveBeenCalledOnce();
+    expect(onRepairing).toHaveBeenCalledOnce();
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).toHaveBeenCalledOnce();
+    expect(onModelCall).toHaveBeenCalledTimes(2);
+    expect(generateText.mock.calls[0][0].prompt).toContain(
+      "Repair instruction: the previous generation failed validation",
+    );
+  });
+
+  it.each([
+    ["transport", new Error("raw transport details")],
+    ["authentication", new Error("raw authentication details")],
+    ["rate limit", new Error("raw rate-limit details")],
+    ["abort", new DOMException("raw abort details", "AbortError")],
+  ])("does not repair or expose a %s final output failure through callbacks", async (_label, failure) => {
+    const onPartialReport = vi.fn();
+    const onValidating = vi.fn();
+    const onRepairing = vi.fn();
+    streamText.mockReturnValueOnce({
+      partialOutputStream: controlledAsyncIterable([]),
+      output: Promise.reject(failure),
+    });
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { onPartialReport, onValidating, onRepairing },
+    );
+
+    await expect(operation).rejects.toBe(failure);
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(onPartialReport).not.toHaveBeenCalled();
+    expect(onValidating.mock.calls).toEqual([[]]);
+    expect(onRepairing).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -322,9 +454,11 @@ describe("structured research model", () => {
       ...report,
       findings: [{ ...report.findings[0], sourceIds: [sourceId] }],
     };
-    generateText
-      .mockResolvedValueOnce({ output: invalidReport })
-      .mockResolvedValueOnce({ output: invalidReport });
+    streamText.mockReturnValueOnce({
+      partialOutputStream: controlledAsyncIterable([]),
+      output: Promise.resolve(invalidReport),
+    });
+    generateText.mockResolvedValueOnce({ output: invalidReport });
 
     const error = await createResearchModel()
       .generateReport(question, sources, acceptedAndRejected, false)
@@ -335,6 +469,8 @@ describe("structured research model", () => {
     expect(error.errors.every((cause: unknown) => cause instanceof ZodError)).toBe(
       true,
     );
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).toHaveBeenCalledOnce();
   });
 
   it("filters rejected sources and evaluations out of report evidence", async () => {
@@ -343,7 +479,7 @@ describe("structured research model", () => {
       { ...evaluations[1], decision: "rejected" as const },
       { ...evaluations[0], sourceId: "source-invented" },
     ];
-    generateText.mockResolvedValueOnce({ output: report });
+    streamText.mockReturnValueOnce(reportStream([], Promise.resolve(report)));
 
     await createResearchModel().generateReport(
       question,
@@ -352,7 +488,7 @@ describe("structured research model", () => {
       false,
     );
 
-    const prompt = generateText.mock.calls[0][0].prompt;
+    const prompt = streamText.mock.calls[0][0].prompt;
     expect(prompt).toContain("source-kimi");
     expect(prompt).not.toContain("source-deepseek");
     expect(prompt).not.toContain("source-invented");
