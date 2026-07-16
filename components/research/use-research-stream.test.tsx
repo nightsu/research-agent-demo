@@ -290,6 +290,39 @@ describe("useResearchStream", () => {
     expect(cancelled).toHaveBeenCalledOnce();
   });
 
+  it("rejects a duplicate report start without resetting the active accumulator", async () => {
+    vi.useFakeTimers();
+    const stream = responseWithReaderSpies([
+      line({ type: "report.started", partial: false }),
+      line({ type: "report.delta", sequence: 0, mode: "append", text: "# First" }),
+      line({ type: "report.started", partial: false }),
+      line({ type: "report.delta", sequence: 0, mode: "replace", text: "# Reset provider secret" }),
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run).toEqual({
+      status: "failed",
+      events: [
+        { type: "report.started", partial: false },
+        localFailure("Research stream protocol error."),
+      ],
+      reportDraft: {
+        markdown: "# First",
+        sequence: 0,
+        status: "incomplete",
+      },
+      hadReportDraft: true,
+      error: "Research stream protocol error.",
+    });
+    expect(JSON.stringify(result.current.run)).not.toContain(
+      "# Reset provider secret",
+    );
+    expect(stream.cancel).toHaveBeenCalledOnce();
+  });
+
   it("force-flushes before validating, repairing, and a terminal event", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
@@ -411,11 +444,13 @@ describe("useResearchStream", () => {
     vi.useFakeTimers();
     const first = deferredResponse();
     const second = deferredResponse();
+    const afterReset = deferredResponse();
     vi.stubGlobal(
       "fetch",
       vi.fn()
         .mockResolvedValueOnce(first.response)
-        .mockResolvedValueOnce(second.response),
+        .mockResolvedValueOnce(second.response)
+        .mockResolvedValueOnce(afterReset.response),
     );
     const { result } = renderHook(() => useResearchStream());
     let firstPromise!: Promise<void>;
@@ -440,9 +475,15 @@ describe("useResearchStream", () => {
     act(() => vi.advanceTimersByTime(40));
     expect(result.current.run.reportDraft).toBeUndefined();
 
-    act(() => second.enqueue(line({ type: "research.cancelled" })));
+    act(() => {
+      second.enqueue(line({ type: "report.started", partial: false }));
+      second.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "fresh second run" }));
+      second.enqueue(line({ type: "research.cancelled" }));
+    });
     act(() => second.close());
     await act(() => secondPromise);
+    expect(result.current.run.reportDraft?.markdown).toBe("fresh second run");
+    expect(result.current.run.reportDraft?.sequence).toBe(0);
     first.error(new DOMException("aborted", "AbortError"));
     await act(() => firstPromise);
     act(() => result.current.reset());
@@ -451,6 +492,20 @@ describe("useResearchStream", () => {
       events: [],
       hadReportDraft: false,
     });
+
+    let afterResetPromise!: Promise<void>;
+    act(() => {
+      afterResetPromise = result.current.start(input);
+    });
+    act(() => {
+      afterReset.enqueue(line({ type: "report.started", partial: false }));
+      afterReset.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "fresh after reset" }));
+      afterReset.enqueue(line({ type: "research.cancelled" }));
+      afterReset.close();
+    });
+    await act(() => afterResetPromise);
+    expect(result.current.run.reportDraft?.markdown).toBe("fresh after reset");
+    expect(result.current.run.reportDraft?.sequence).toBe(0);
   });
 
   it("retries with a fresh accumulator and ignores the previous generation's pending flush", async () => {
@@ -483,13 +538,20 @@ describe("useResearchStream", () => {
     act(() => vi.advanceTimersByTime(40));
     expect(result.current.run.reportDraft).toBeUndefined();
 
-    act(() => second.enqueue(line({ type: "research.cancelled" })));
+    act(() => {
+      second.enqueue(line({ type: "report.started", partial: false }));
+      second.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "fresh retry draft" }));
+      second.enqueue(line({ type: "research.cancelled" }));
+    });
     act(() => second.close());
     await act(() => retryPromise);
     first.error(new DOMException("aborted", "AbortError"));
     await act(() => firstPromise);
-    expect(result.current.run.events).toEqual([
-      { type: "research.cancelled" },
+    expect(result.current.run.reportDraft?.markdown).toBe("fresh retry draft");
+    expect(result.current.run.reportDraft?.sequence).toBe(0);
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "report.started",
+      "research.cancelled",
     ]);
   });
 

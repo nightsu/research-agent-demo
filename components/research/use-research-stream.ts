@@ -340,6 +340,10 @@ export function useResearchStream(): {
           if (!isCurrent(generation)) return;
 
           if (event.type === "report.started") {
+            const activeAccumulator = reportAccumulatorRef.current;
+            if (activeAccumulator?.generation === generation) {
+              throw new ProtocolError();
+            }
             clearReportFlushTimer();
             reportAccumulatorRef.current = {
               generation,
