@@ -95,12 +95,17 @@ function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
   }
 }
 
+/** Numbers retained sources in order; aliases inherit an included canonical identity. */
 export function buildCitationNumbers(
   sources: Source[],
   sourceIdentityById: ReadonlyMap<string, string> = new Map(),
+  acceptedIdentities?: ReadonlySet<string>,
 ): Map<string, number> {
   const numbers = new Map<string, number>();
-  sources.forEach((source, index) => numbers.set(source.id, index + 1));
+  const numberedSources = acceptedIdentities
+    ? sources.filter((source) => acceptedIdentities.has(source.id))
+    : sources;
+  numberedSources.forEach((source, index) => numbers.set(source.id, index + 1));
   for (const [alias, identity] of sourceIdentityById) {
     const number = numbers.get(identity);
     if (number) numbers.set(alias, number);
@@ -158,6 +163,11 @@ export function deriveResearchViewModel(
   }
 
   const latestEvent = events.at(-1);
+  const acceptedIdentities = new Set(
+    [...evaluations]
+      .filter(([, evaluation]) => evaluation.decision === "accepted")
+      .map(([identity]) => identity),
+  );
   const currentPhase = events
     .toReversed()
     .map(phaseForLatestEvent)
@@ -168,7 +178,11 @@ export function deriveResearchViewModel(
     counters: { sources: sources.length, accepted, rejected },
     latestEventLabel: eventStatusLabel(latestEvent),
     currentPhase,
-    citationNumbers: buildCitationNumbers(sources, sourceIdentityById),
+    citationNumbers: buildCitationNumbers(
+      sources,
+      sourceIdentityById,
+      acceptedIdentities,
+    ),
     sourceIdentityById,
   };
 

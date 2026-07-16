@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { deriveResearchViewModel } from "../../../components/research/research-view-model";
 import {
   createResearchFlowFixture,
   researchFlowAcceptedSourceIds,
@@ -167,7 +168,17 @@ describe("POST /api/research complete workflow", () => {
         event.type === "report.delta",
     );
     expect(reportDeltas.map((event) => event.sequence)).toEqual([0, 1]);
-    expect(reportDeltas.map((event) => event.text).join("")).toContain("[1] [2]");
+    const completedView = deriveResearchViewModel(events);
+    const acceptedCitationNumbers = researchFlowAcceptedSourceIds.map(
+      (sourceId) => completedView.citationNumbers.get(sourceId),
+    );
+    expect(acceptedCitationNumbers).toEqual([1, 2]);
+    expect(
+      completedView.citationNumbers.get(researchFlowRejectedSourceId),
+    ).toBeUndefined();
+    expect(reportDeltas.map((event) => event.text).join("")).toContain(
+      acceptedCitationNumbers.map((number) => `[${number}]`).join(" "),
+    );
 
     expect(firstRun.fixture.searchCalls).toEqual([
       { query: researchFlowInitialQuery, timeRange: "year" },

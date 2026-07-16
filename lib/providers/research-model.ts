@@ -53,10 +53,17 @@ export interface ResearchModelOptions {
 }
 
 export interface ResearchReportModelOptions extends ResearchModelOptions {
+  /**
+   * Receives structured report snapshots in generation order. Implementations
+   * must invoke and await this callback serially: Agent diff/sequence state and
+   * route transport backpressure both depend on the previous delivery settling.
+   */
   onPartialReport?: (
     partial: PartialResearchReport,
   ) => void | Promise<void>;
+  /** Called only after every prior partial callback settles, and must be awaited. */
   onValidating?: () => void | Promise<void>;
+  /** Called after validation and prior partial callbacks settle, and must be awaited. */
   onRepairing?: () => void | Promise<void>;
 }
 

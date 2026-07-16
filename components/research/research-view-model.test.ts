@@ -92,6 +92,25 @@ describe("deriveResearchViewModel", () => {
     expect(view.evaluations.get("a")?.sourceId).toBe("a-alias");
   });
 
+  it("numbers only latest accepted identities and gives aliases the canonical number", () => {
+    const alias: Source = {
+      ...sourceA,
+      id: "a-alias",
+      url: "https://example.com/article#accepted",
+    };
+    const view = deriveResearchViewModel([
+      search([sourceB, sourceA]),
+      search([alias]),
+      evaluated(sourceB.id, "rejected"),
+      evaluated(alias.id, "accepted"),
+    ]);
+
+    expect(view.sources.map((source) => source.id)).toEqual(["b", "a"]);
+    expect(view.citationNumbers.get(sourceB.id)).toBeUndefined();
+    expect(view.citationNumbers.get(sourceA.id)).toBe(1);
+    expect(view.citationNumbers.get(alias.id)).toBe(1);
+  });
+
   it("uses the latest workflow event so a follow-up search returns to searching", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), { type: "gap.detected", description: "Need more", followUpQueries: ["follow up"] }, { type: "search.started", query: "follow up", reason: "Close gap" }],
