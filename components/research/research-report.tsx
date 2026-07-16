@@ -3,6 +3,7 @@ import remarkGfm from "remark-gfm";
 
 import type { ResearchReport, Source } from "@/lib/agent/research-types";
 import { canonicalizeUrl } from "@/lib/agent/research-state";
+import { ReportShell } from "./report-shell";
 import { buildCitationNumbers } from "./research-view-model";
 
 export interface ResearchReportViewProps {
@@ -20,7 +21,11 @@ export function ResearchReportView({ report, sources, citationNumbers = buildCit
   const markdownComponents = createMarkdownComponents(sourceUrlByCanonicalUrl);
 
   return (
-    <article className="research-report" data-animate={animate} aria-labelledby="report-title">
+    <ReportShell
+      phase="final"
+      data-animate={animate}
+      aria-labelledby="report-title"
+    >
       <p className="eyebrow">Research report</p>
       <h2 id="report-title">{report.title}</h2>
       <section>
@@ -64,7 +69,7 @@ export function ResearchReportView({ report, sources, citationNumbers = buildCit
       <ReportList title="Trends" items={report.trends} components={markdownComponents} />
       <ReportList title="Disagreements" items={report.disagreements} components={markdownComponents} />
       <ReportList title="Limitations" items={report.limitations} components={markdownComponents} />
-    </article>
+    </ReportShell>
   );
 }
 

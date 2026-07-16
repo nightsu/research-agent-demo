@@ -48,10 +48,10 @@ describe("ResearchReportView", () => {
       />,
     );
 
-    expect(container.querySelector(".research-report")).toHaveAttribute(
-      "data-animate",
-      marker,
-    );
+    const article = container.querySelector(".research-report");
+    expect(article).toHaveClass("report-shell-final");
+    expect(article).toHaveAttribute("data-report-phase", "final");
+    expect(article).toHaveAttribute("data-animate", marker);
   });
 
   it("keeps known citations interactive and unknown model links inert", () => {

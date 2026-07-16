@@ -190,6 +190,8 @@ partial stream 结束后先发 `report.validating`。只有最终结构化输出
 
 草稿由独立 `streamdown` 包渲染，不安装 assistant-ui，也不引入 Thread、Message 或额外 Runtime。草稿禁用 raw HTML 插件，把链接渲染成不可点击文本并丢弃图片；它没有 `aria-live`，避免每 40 ms 重读整篇文档。`prefers-reduced-motion` 只关闭 caret 和 entry transition，文本本身仍随真实 delta 增长。正式报告继续由 `ResearchReportView` 渲染，并只让已收集来源的安全引用打开 `SourceDrawer`。
 
+`ReportShell` 是 Draft 与正式报告唯一共享的 UI 边界：它只提供报告纸的 `<article>`、phase class 和语义属性透传。Draft 内部继续由 Streamdown 容忍未闭合 Markdown，正式态继续由 `ResearchReportView` 渲染经过校验的 finding、confidence 与可交互引用。共享外壳不等于共享不完整业务结构；这个边界避免为了视觉一致而把半成品引用误当成正式数据。
+
 ### 滚动所有权与正式替换
 
 桌面宽度大于 960 px 时，`.workspace-content` 是右侧唯一纵向 scroll owner，报告草稿保持 `overflow-y: visible`；表格只允许自身横向滚动。宽度不超过 960 px 时，`.workspace-content` 改为 visible overflow，document / window 成为唯一纵向 owner；固定的“Back to latest report”按钮恢复跟随。跨过 960 px 的 media query 时，Workbench 动态迁移 owner 和 following 状态，而不是让两个容器同时滚动。
