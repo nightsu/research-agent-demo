@@ -4,7 +4,7 @@
 
 **Goal:** Stream the final structured research report as a real, continuously growing Markdown draft, preserve strict report and citation validation, and replace the draft with the existing formal report without changing the workspace scroll ownership.
 
-**Architecture:** AI SDK 6 `streamText` produces `partialOutputStream` snapshots for the existing `reportSchema`. The server projects each partial report into deterministic Markdown and emits append-or-replace NDJSON updates; the client validates sequence numbers, keeps the high-frequency draft outside `run.events`, batches React updates every 40 ms, and renders the draft with standalone Streamdown. The existing `ResearchWorkbench` remains the right scroll owner and swaps the validated `ResearchReportView` into the same document flow.
+**Architecture:** AI SDK 6 performs one `streamText` report call and selects its output contract from `ModelCapabilities`: native structured-output models use `Output.object({ schema: reportSchema })` / `json_schema`, while prompted models use `appendJsonContract + Output.json()` / `json_object`, local deep-partial Zod filtering, and final full `reportSchema` validation. The server projects each valid partial report into deterministic Markdown and emits append-or-replace NDJSON updates; the client validates sequence numbers, keeps the high-frequency draft outside `run.events`, batches React updates every 40 ms, and renders the draft with standalone Streamdown. The existing `ResearchWorkbench` remains the right scroll owner and swaps the validated `ResearchReportView` into the same document flow.
 
 **Tech Stack:** Next.js 16.2 local App Router conventions, React 19.2, TypeScript 5, AI SDK 6.0, Zod 4, NDJSON `ReadableStream`, standalone `streamdown`, Vitest 4, Testing Library.
 
@@ -295,6 +295,8 @@ After `partialOutputStream` ends, await `onValidating` before awaiting and valid
 4. validate citations and return the repaired report.
 
 Transport, authentication, rate-limit and abort failures remain single-call failures. Add a Chinese comment explaining why the second attempt is hidden: replaying a second visible draft would clear or contradict text the user is already reading.
+
+> **Implementation deviation and root-cause correction (post-plan):** The original step assumed every OpenAI-compatible model accepted `Output.object` / `json_schema`. Live Kimi evidence at `f8f2119` disproved that assumption. Commit `6dd8d76` added the prompted streaming report branch (`appendJsonContract + Output.json`); `9f9d4d6` propagated explicit Kimi / DeepSeek `ModelCapabilities`; `aa3b2d8` added local deep-partial Zod filtering for prompted snapshots and retained full final `reportSchema` validation. The native branch still follows this step for `structuredOutputs: true`; the prompted branch preserves the same one-call, real-partial product semantics with a compatible wire contract.
 
 - [x] **Step 5: Run provider tests and checks**
 
@@ -751,7 +753,9 @@ git commit -m "feat: integrate streamed reports into workspace"
 ## Task 7: Document, verify and browser-QA the complete stream
 
 **Files:**
+- Modify: `README.md`
 - Modify: `docs/architecture.md`
+- Modify: `docs/superpowers/specs/2026-07-16-streaming-research-report-design.md`
 - Modify: `docs/superpowers/plans/2026-07-16-streaming-research-report.md`
 - Verify: all files from Tasks 1–6
 
@@ -791,7 +795,7 @@ npm run dev -- --port 3002
 
 Expected: Next.js reports Ready for the implementation worktree. Confirm the browser URL points to that worktree server before collecting evidence.
 
-- [ ] **Step 4: Verify real provider streaming on desktop**
+- [x] **Step 4: Verify real provider streaming on desktop**
 
 At 1440 × 900, run a research question that produces a long report and capture these facts with browser measurements:
 
@@ -805,13 +809,15 @@ At 1440 × 900, run a research question that produces a long report and capture 
 - formal report replacement does not jump to top and does not replay `report-feed`;
 - formal citations still open the source drawer.
 
-- [ ] **Step 5: Verify incomplete, retry, reduced-motion and mobile behavior**
+- [x] **Step 5: Verify incomplete, retry, reduced-motion and mobile behavior**
 
 Use Stop research during report streaming and confirm the draft remains with an incomplete label and one cancelled terminal record. Retry and confirm the old Markdown disappears before the new generation starts.
 
 Emulate `prefers-reduced-motion: reduce` and confirm caret/entry animations stop while text continues to update. At 900 × 800, confirm the document remains the only persistent vertical scroll owner and the draft introduces no nested scroll area.
 
 If a provider run does not reach synthesis, record the provider failure explicitly and use deterministic browser fixtures only for the missing UI state; do not describe fixture evidence as a live provider observation.
+
+Reduced-motion browser emulation is considered complete only when the selected Browser backend advertises a real media-emulation capability. If it exposes only viewport override, record the limitation and use the focused CSS / renderer / Workbench tests as the explicit automated substitute; do not mutate page state to simulate the media query.
 
 - [x] **Step 6: Record QA evidence and commit documentation**
 
@@ -821,8 +827,8 @@ Run:
 
 ```bash
 git diff --check
-git add docs/architecture.md docs/superpowers/plans/2026-07-16-streaming-research-report.md
-git commit -m "docs: explain streaming report pipeline"
+git add README.md docs/architecture.md docs/superpowers/specs/2026-07-16-streaming-research-report-design.md docs/superpowers/plans/2026-07-16-streaming-research-report.md
+git commit -m "docs: document streaming provider strategies"
 ```
 
 - [ ] **Step 7: Review the complete commit range**
@@ -840,7 +846,9 @@ Dispatch a fresh final reviewer over the design-doc commit exclusive through cur
 
 ## Task 7 verification evidence (2026-07-16, Asia/Shanghai)
 
-### Automated verification
+The following evidence through the end of “Responsive owner, accessibility and console evidence” was captured before the provider-capability correction and committed in `f8f2119`. It is intentionally retained as **pre-fix / Not Ready historical evidence**, not as the current release verdict. The later post-fix section is authoritative for the current `aa3b2d8` implementation.
+
+### Pre-fix automated verification
 
 - `git diff --check`: exit 0 before browser QA.
 - `npm test`: exit 0, 22 test files and 394 tests passed.
@@ -851,13 +859,13 @@ Dispatch a fresh final reviewer over the design-doc commit exclusive through cur
 - `rg -n '@assistant-ui/' package.json package-lock.json`: no output and expected exit 1.
 - Pre-commit `git status --short`: only `docs/architecture.md` and this plan are intended documentation changes.
 
-### Server and browser boundary
+### Pre-fix server and browser boundary
 
 - Port 3002 was free before start. The current worktree server started with the existing main-checkout `.env.local` loaded in-process, without printing or copying secrets, and was bound only to `127.0.0.1:3002`.
 - Browser URL was explicitly verified as `http://localhost:3002/`, not an older checkout or port. QA used the Browser plugin's `browser-client` with its `tab.playwright` surface.
 - Exact desktop viewport: 1440 × 900. Exact narrow viewport: 900 × 800. The temporary viewport override was reset after QA.
 
-### Live provider evidence
+### Pre-fix live provider evidence
 
 - Four Kimi + Tavily attempts reached real synthesis. They produced actual DOM text changes while the run remained `running`, rather than revealing one complete DOM with CSS: observed draft lengths included `0 → 176 → 1495` on the first run, `0 → 736 → 966 → 1917` on its retry, `0 → 87` on the cancellation run, and `0 → 95 → 1067` on the final bounded completion attempt. `sequence` is intentionally absent from the DOM contract, so Browser could not read a numeric sequence without prohibited page-state injection; deterministic route coverage observed sequences `[0, 1]`, while these increasing live Markdown lengths are the browser evidence for real deltas.
 - A live following sample at length 176 measured desktop `.workspace-content` as `scrollTop=112`, `scrollHeight=760`, `clientHeight=647`, `bottomDistance=1`; at length 1495 it measured `609 / 1256 / 647 / 0`. Retry samples measured `261 / 908 / 647 / 0` at length 736 and `452 / 1100 / 647 / 1` at length 966. All are within the 48 px following threshold.
@@ -867,7 +875,7 @@ Dispatch a fresh final reviewer over the design-doc commit exclusive through cur
 - Stop was clicked during a live synthesis draft. The terminal UI preserved 87 characters, changed the label to `报告草稿未完成，最终报告尚不可用`, reported `Research cancelled`, and contained exactly one cancelled Printer record. Retry immediately cleared the old Markdown (`draftLength=0`, old heading absent) before the new generation began.
 - Live completion caveat: every bounded completion attempt reached synthesis and streamed a draft, but none produced a validated formal report. Outcomes were the public errors `A research dependency failed.` or `A research operation timed out.`; incomplete drafts of 1858 and 1067 characters remained readable. Server output also warned that Kimi `kimi-k2.6` does not support the requested `responseFormat` feature. Therefore formal replacement, `data-animate="false"`, and citation-drawer opening are **not** described as live observations.
 
-### Responsive owner, accessibility and console evidence
+### Pre-fix responsive owner, accessibility and console evidence
 
 - On 900 × 800 after a followed desktop-to-document migration, document metrics were `scrollTop=1393`, `scrollHeight=2193`, `clientHeight=800`, `bottomDistance=0`; `.workspace-content` measured `scrollTop=0`, `scrollHeight=1526`, `clientHeight=1526`, `overflow-y: visible`. `.workspace-shell` and the draft also computed to visible vertical overflow, so document/window was the only persistent vertical owner.
 - Mobile PageUp produced document metrics `196 / 2193 / 800 / 1197`, showed a `position: fixed` “Back to latest report” button, and left workspace `scrollTop=0`. Clicking the button restored document `1393 / 2193 / 800 / 0`. Resizing back across 960 px restored desktop workspace ownership at `1107 / 1682 / 575 / 0`, with document `0 / 900 / 900`.
@@ -875,6 +883,45 @@ Dispatch a fresh final reviewer over the design-doc commit exclusive through cur
 - Browser console contained one hydration mismatch from the user's Chrome extension injecting `trancy-version="7.8.9"` on `<html>`; the diff identifies the external attribute, not application markup. No other browser warning/error was captured. Server logs contained the Kimi `responseFormat` compatibility warning noted above.
 - No deterministic browser fixture was injected: the production page has no fixture entry point, and the required Browser surface exposes read-only page evaluation. Mutating `fetch` or React state from page code would violate the Browser contract. Automated deterministic route, Hook, Workbench, report and citation tests supply the missing completion/citation/reduced-motion evidence; this limitation is kept explicit rather than presenting test evidence as live QA.
 - Browser tabs were finalized, the viewport override was reset, the development server was stopped, and `lsof -nP -iTCP:3002 -sTCP:LISTEN` returned no listener (exit 1).
+
+### Post-capability-fix revalidation (current)
+
+#### Automated verification
+
+- Start HEAD was `aa3b2d8` with a clean worktree.
+- `npm test`: exit 0, 23 test files and **404 tests passed**.
+- `npm run lint`: exit 0.
+- `npm run typecheck`: exit 0.
+- `npm run build`: the sandboxed run reproduced only Turbopack `creating new process - binding to a port - Operation not permitted (os error 1)`; the approved unsandboxed rerun exited 0, compiled successfully, ran TypeScript, and generated `/`, `/_not-found`, and `/api/research`.
+- `git diff --check`: exit 0 before documentation edits.
+- `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
+- `rg -n "@assistant-ui|Assistant|ThreadPrimitive|useAISDKRuntime|assistant-ui" app components lib package.json`: no output and expected exit 1. The report surface remains the custom Workbench plus standalone Streamdown.
+- Wire-level structured-output tests are included in the 404-test suite: native capability sends `json_schema`, prompted capability sends `json_object`, Kimi / DeepSeek capabilities propagate through selection, invalid prompted partials are skipped, and the final object is checked by full `reportSchema`.
+
+#### Server and Browser boundary
+
+- The current worktree server loaded `../../.env.local` in-process without printing or copying secrets, bound only to `127.0.0.1:3002`, and reported Ready. Browser URL was explicitly verified as `http://127.0.0.1:3002/`.
+- Browser QA used the installed `control-in-app-browser` skill (`browser-client` plus the selected Browser backend), not standalone Playwright. Exact desktop viewport was 1440 × 900; narrow spot-check viewport was 900 × 800.
+- The selected Browser advertised only the `viewport` capability and no media / reduced-motion emulation. `prefers-reduced-motion` behavior is therefore an explicit automated substitute through `app/workspace-layout.test.ts`, renderer tests, and Workbench tests; no page-state injection was used.
+
+#### Successful Kimi + Tavily live completion
+
+- One bounded Kimi + Tavily run progressed through plan, search, evaluation, synthesis, real draft streaming, validation, and `report.completed`. It used 6 sources (5 accepted, 1 rejected), 1/2 search rounds, and 6/12 agent operations.
+- While status remained running, observed draft text lengths were **4744 → 4958 → 5079** characters; a later paused sample reached **5502**. Earlier synthesis observations also showed the title, then Executive summary, then Key findings appearing over time. These were real DOM content changes, not a completed document revealed by CSS.
+- Desktop follow samples were `scrollTop / scrollHeight / clientHeight / bottomDistance`: `1930 / 2578 / 647 / 1`, `2028.5 / 2676 / 647 / 0.5`, and `2137.5 / 2785 / 647 / 0.5`. `.workspace-content` was the vertical owner while `.streaming-report-draft` remained in normal document flow.
+- Scrolling upward produced `1728 / 2867 / 647 / 492` and displayed “Back to latest report”. During later delta growth the draft increased to 5502 and scroll height to 2950 while **scrollTop remained 1728**, proving paused reading did not follow. Clicking the button restored `4538 / 5186 / 647 / 1`.
+- The run emitted validation on the successful path; repairing did not occur and is not claimed as a live observation for this run. Automated tests cover the repair-only branch.
+- Formal replacement succeeded with status `Research completed. Latest event: Report completed.`, `data-animate="false"`, and a 6169-character formal article. `scrollTop` was **4538 immediately before and after replacement**, so the draft-to-formal swap did not jump or replay.
+- Formal title: **“AI Coding Assistant Capabilities and Adoption: 2024-2025 Evolution”**. Its Executive summary begins: “Over the past year, AI coding assistants evolved from autocomplete and chat tools to agentic systems capable of multi-step reasoning, autonomous task execution, and cross-platform orchestration.”
+- Clicking citation button **[1]** opened `SourceDrawer` / dialog with source number `[1]` and title **“GitHub Universe · Recap · GitHub”**. The dialog showed the accepted evidence detail and the safe original `github.com` link.
+- Unlike the pre-fix runs, server logs contained **no Kimi `responseFormat` unsupported warning**. The completed research POST returned 200 in approximately 2.5 minutes.
+
+#### Responsive, stop/retry, and log spot checks
+
+- At 900 × 800, document root was the only persistent vertical owner: `documentElement 0 / 5709 / 800`, while `.workspace-content` measured `0 / 5115 / 5115` with `overflow-y: visible` and `.progress-panel` was also non-scrolling. The mobile “Back to latest report” button moved document root to `4909 / 5709 / 800 / 0`.
+- A light Retry → Stop recheck found exactly one “Stop research” control during the restarted run; Stop returned `Research cancelled. Latest event: Research cancelled.` and restored Retry / New research controls. The earlier pre-fix synthesis-draft preservation evidence remains applicable because the compatibility commits did not change Workbench cancellation logic; automated tests continue to cover retained incomplete text and generation isolation.
+- Browser console contained one hydration mismatch whose diff showed the external Chrome extension attribute `trancy-version="7.8.9"` on `<html>`. No other browser warning/error was captured. Server output repeated that extension-originated hydration message but contained no application/provider compatibility warning.
+- Browser tabs were finalized and the viewport override was reset. The development server was stopped after QA.
 
 ## Plan self-review checklist
 
