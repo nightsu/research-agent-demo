@@ -620,11 +620,11 @@ npm test -- components/research/streaming-report-draft.test.tsx app/workspace-la
 npm run typecheck
 npm run lint -- components/research/streaming-report-draft.tsx components/research/streaming-report-draft.test.tsx app/workspace-layout.test.ts
 npm ls streamdown
-rg -n '@assistant-ui/' package.json package-lock.json
+rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json
 git diff --check
 ```
 
-Expected: tests, static checks, `npm ls streamdown` and `git diff --check` exit 0. The `rg` command exits 1 with no matches, proving assistant-ui packages are absent.
+Expected: tests, static checks, `npm ls streamdown` and `git diff --check` exit 0. The scoped, case-insensitive `rg` command exits 1 with no matches, proving the checked runtime surfaces and dependency manifests contain no assistant-ui integration.
 
 - [x] **Step 7: Commit the renderer slice**
 
@@ -856,7 +856,7 @@ The following evidence through the end of “Responsive owner, accessibility and
 - `npm run typecheck`: exit 0.
 - `npm run build`: the sandboxed first run failed only with Turbopack `creating new process - binding to a port - Operation not permitted (os error 1)`; the approved unsandboxed rerun exited 0, compiled successfully and generated `/`, `/_not-found` and `/api/research`.
 - `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
-- `rg -n '@assistant-ui/' package.json package-lock.json`: no output and expected exit 1.
+- `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json`: no output and expected exit 1.
 - Pre-commit `git status --short`: only `docs/architecture.md` and this plan are intended documentation changes.
 
 ### Pre-fix server and browser boundary
@@ -895,7 +895,7 @@ The following evidence through the end of “Responsive owner, accessibility and
 - `npm run build`: the sandboxed run reproduced only Turbopack `creating new process - binding to a port - Operation not permitted (os error 1)`; the approved unsandboxed rerun exited 0, compiled successfully, ran TypeScript, and generated `/`, `/_not-found`, and `/api/research`.
 - `git diff --check`: exit 0 before documentation edits.
 - `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
-- `rg -n "@assistant-ui|Assistant|ThreadPrimitive|useAISDKRuntime|assistant-ui" app components lib package.json`: no output and expected exit 1. The report surface remains the custom Workbench plus standalone Streamdown.
+- Corrected dependency verification: `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json` produced no output and expected exit 1. The earlier broad historical pattern included ordinary `Assistant` role text, so it could match unrelated application copy and must not be cited as a no-output check. The scoped result confirms the report surface remains the custom Workbench plus standalone Streamdown.
 - Wire-level structured-output tests are included in the 404-test suite: native capability sends `json_schema`, prompted capability sends `json_object`, Kimi / DeepSeek capabilities propagate through selection, invalid prompted partials are skipped, and the final object is checked by full `reportSchema`.
 
 #### Server and Browser boundary
