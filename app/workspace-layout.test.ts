@@ -33,9 +33,9 @@ describe("desktop research workspace layout", () => {
   it("uses an explicit paper-feed animation for newly printed records", () => {
     expect(ruleBody('.printer-record[data-latest="true"]')).toMatch(/animation:\s*printer-feed/);
     expect(styles).toMatch(/@keyframes\s+printer-feed/);
-    expect(ruleBody(".research-report > .eyebrow")).toMatch(/animation:\s*report-feed/);
-    expect(ruleBody(".research-report > h2")).toMatch(/animation:\s*report-feed/);
-    expect(ruleBody(".research-report > section")).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > .eyebrow')).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > h2')).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > section')).toMatch(/animation:\s*report-feed/);
     expect(styles).toMatch(/@keyframes\s+report-feed/);
   });
 
@@ -46,9 +46,9 @@ describe("desktop research workspace layout", () => {
 
     expect(ruleBody('.printer-record[data-latest="true"]', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
     expect(ruleBody('.printer-record[data-latest="true"] article::after', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > .eyebrow", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > h2", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > section", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > .eyebrow', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > h2', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > section', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
   });
 
   it("leaves nested document regions vertically unbounded", () => {

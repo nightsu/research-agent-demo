@@ -12,7 +12,7 @@ export type PrinterRecord =
   | { id: string; kind: "search"; query: string; reason: string; status: "running" | "complete"; resultCount?: number; sources: PrinterSource[] }
   | { id: string; kind: "gap"; description: string; followUpQueries: string[] }
   | { id: string; kind: "conclusion"; summary: string }
-  | { id: string; kind: "synthesis"; partial: boolean; status: "running" | "complete" }
+  | { id: string; kind: "synthesis"; partial: boolean; status: "running" | "validating" | "repairing" | "complete" }
   | { id: string; kind: "terminal"; outcome: "cancelled" | "failed"; message: string; recoverable: boolean };
 
 export function derivePrinterRecords(events: ResearchEvent[]): PrinterRecord[] {
@@ -65,9 +65,19 @@ export function derivePrinterRecords(events: ResearchEvent[]): PrinterRecord[] {
       case "report.started":
         records.push({ id: `synthesis-${index}`, kind: "synthesis", partial: event.partial, status: "running" });
         break;
+      case "report.validating":
+      case "report.repairing": {
+        const record = records.toReversed().find(
+          (item) => item.kind === "synthesis" && item.status !== "complete",
+        );
+        if (record?.kind === "synthesis") {
+          record.status = event.type === "report.validating" ? "validating" : "repairing";
+        }
+        break;
+      }
       case "report.completed":
       case "research.partial": {
-        const record = records.toReversed().find((item) => item.kind === "synthesis" && item.status === "running");
+        const record = records.toReversed().find((item) => item.kind === "synthesis" && item.status !== "complete");
         if (record?.kind === "synthesis") record.status = "complete";
         else records.push({ id: `synthesis-${index}`, kind: "synthesis", partial: event.type === "research.partial", status: "complete" });
         break;
@@ -79,6 +89,7 @@ export function derivePrinterRecords(events: ResearchEvent[]): PrinterRecord[] {
         records.push({ id: `terminal-${index}`, kind: "terminal", outcome: "failed", message: event.message, recoverable: event.recoverable });
         break;
       case "progress.updated":
+      case "report.delta":
         break;
     }
   }

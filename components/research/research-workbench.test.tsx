@@ -9,6 +9,7 @@ import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
 import { deriveResearchViewModel } from "./research-view-model";
 import { ResearchWorkbench } from "./research-workbench";
+import type { ReportDraftState } from "./use-research-stream";
 
 const source: Source = {
   id: "source-1",
@@ -86,6 +87,8 @@ const retry = vi.fn();
 let mockedRun: {
   status: "idle" | "running" | "completed" | "partial" | "cancelled" | "failed";
   events: ResearchEvent[];
+  reportDraft?: ReportDraftState;
+  hadReportDraft?: boolean;
   error?: string;
 };
 
@@ -509,22 +512,203 @@ describe("ResearchWorkbench", () => {
     expect(disconnect).toHaveBeenCalledOnce();
   });
 
-  it("positions a newly completed report at the workspace top", () => {
-    mockedRun = { status: "running", events: completedEvents.slice(0, -1) };
+  it("promotes the draft to primary content and moves the Printer into a closed archive", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const printer = screen.getByText("How the research unfolded").closest(".printer-shell");
+    expect(printer?.closest("details")).toBeNull();
+
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
+    rerender(<ResearchWorkbench />);
+
+    expect(screen.getByText("正在生成报告草稿").closest(".streaming-report-draft")).toBeInTheDocument();
+    const archive = screen.getByText(/view research process/i).closest("details");
+    expect(archive).not.toHaveAttribute("open");
+    expect(archive).toContainElement(screen.getByText("How the research unfolded"));
+  });
+
+  it("positions the report surface at the top once, then follows draft growth at the bottom", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
     const { rerender } = render(<ResearchWorkbench />);
     const viewport = screen.getByRole("region", { name: /research workspace content/i });
     const scrollTo = defineWorkspaceScroll(viewport);
     scrollTo.mockClear();
 
-    mockedRun = { status: "completed", events: completedEvents };
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
     rerender(<ResearchWorkbench />);
     expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
     scrollTo.mockClear();
 
-    viewport.scrollTop = 100;
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" },
+      ],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).not.toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("pauses draft following while reading and resumes at the latest report", () => {
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 200);
     fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+    scrollTo.mockClear();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [
+        ...mockedRun.events,
+        { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" },
+      ],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
     expect(scrollTo).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: /back to latest progress/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest report/i }));
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+    expect(screen.queryByRole("button", { name: /back to latest report/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps one draft visible through validation and repair while updating the archived synthesis", () => {
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" },
+        { type: "report.validating" },
+      ],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "validating" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    expect(screen.getAllByRole("heading", { name: "Draft" })).toHaveLength(1);
+    expect(screen.getByText("Synthesis · validating")).toBeInTheDocument();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.repairing" }],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "repairing" },
+    };
+    rerender(<ResearchWorkbench />);
+    expect(screen.getAllByRole("heading", { name: "Draft" })).toHaveLength(1);
+    expect(screen.getByText("Synthesis · repairing")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      status: "cancelled" as const,
+      event: { type: "research.cancelled" } as ResearchEvent,
+      outcome: /research · cancelled/i,
+    },
+    {
+      status: "failed" as const,
+      event: { type: "research.failed", message: "Safe failure", recoverable: true } as ResearchEvent,
+      outcome: /research · failed/i,
+    },
+  ])("retains an incomplete draft and one terminal archive card when $status", ({ status, event, outcome }) => {
+    mockedRun = {
+      status,
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Incomplete" },
+        event,
+      ],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+      error: status === "failed" ? "Safe failure" : undefined,
+    };
+    render(<ResearchWorkbench />);
+
+    expect(screen.getByText(/报告草稿未完成/)).toBeVisible();
+    expect(screen.getAllByText(outcome)).toHaveLength(1);
+    expect(screen.getAllByText(/view research process/i)).toHaveLength(1);
+  });
+
+  it("replaces a streamed draft in place without moving the reader or replaying report animation", () => {
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 200);
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: true };
+    rerender(<ResearchWorkbench />);
+
+    expect(screen.getByRole("heading", { name: report.title }).closest(".research-report")).toHaveAttribute("data-animate", "false");
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(200);
+  });
+
+  it("animates the formal report fallback when no report delta was received", () => {
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: false };
+    render(<ResearchWorkbench />);
+
+    expect(screen.getByRole("heading", { name: report.title }).closest(".research-report")).toHaveAttribute("data-animate", "true");
+  });
+
+  it("clears draft-facing UI when retrying or starting a new research", () => {
+    mockedRun = {
+      status: "failed",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "research.failed", message: "Safe failure", recoverable: true },
+      ],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+      error: "Safe failure",
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    fireEvent.click(screen.getByRole("button", { name: /retry research/i }));
+    expect(retry).toHaveBeenCalledOnce();
+
+    mockedRun = { status: "running", events: [], hadReportDraft: false };
+    rerender(<ResearchWorkbench />);
+    expect(screen.queryByText(/报告草稿未完成/)).not.toBeInTheDocument();
+    expect(screen.getByText("How the research unfolded").closest("details")).toBeNull();
+
+    mockedRun = {
+      status: "cancelled",
+      events: [{ type: "research.cancelled" }],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+    };
+    rerender(<ResearchWorkbench />);
+    fireEvent.click(screen.getByRole("button", { name: /new research/i }));
+    expect(reset).toHaveBeenCalledOnce();
+
+    mockedRun = { status: "idle", events: [], hadReportDraft: false };
+    rerender(<ResearchWorkbench />);
+    expect(screen.getByRole("form", { name: /start research/i })).toBeInTheDocument();
   });
 });
 
