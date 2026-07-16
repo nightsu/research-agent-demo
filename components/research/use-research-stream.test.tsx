@@ -173,10 +173,352 @@ function responseWithReaderSpies(chunks: string[]) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
+async function drainStreamReads(): Promise<void> {
+  await act(async () => {
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve();
+    }
+  });
+}
+
 describe("useResearchStream", () => {
+  it("buffers report deltas outside the durable event log and flushes one batched draft after 40ms", async () => {
+    vi.useFakeTimers();
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+    let promise!: Promise<void>;
+    act(() => {
+      promise = result.current.start(input);
+    });
+
+    act(() => {
+      stream.enqueue(line({ type: "report.started", partial: false }));
+      stream.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "# Draft" }));
+      stream.enqueue(line({ type: "report.delta", sequence: 1, mode: "append", text: " grows" }));
+    });
+    await drainStreamReads();
+
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: "",
+      sequence: -1,
+      status: "streaming",
+    });
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "report.started",
+    ]);
+    act(() => vi.advanceTimersByTime(39));
+    expect(result.current.run.reportDraft?.markdown).toBe("");
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: "# Draft grows",
+      sequence: 1,
+      status: "streaming",
+    });
+
+    act(() => stream.enqueue(line({ type: "research.cancelled" })));
+    act(() => stream.close());
+    await act(() => promise);
+  });
+
+  it("uses replace deltas as complete snapshots", async () => {
+    vi.useFakeTimers();
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+    let promise!: Promise<void>;
+    act(() => {
+      promise = result.current.start(input);
+    });
+    act(() => {
+      stream.enqueue(line({ type: "report.started", partial: false }));
+      stream.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "old" }));
+      stream.enqueue(line({ type: "report.delta", sequence: 1, mode: "replace", text: "new snapshot" }));
+    });
+    await drainStreamReads();
+    act(() => vi.advanceTimersByTime(40));
+
+    expect(result.current.run.reportDraft?.markdown).toBe("new snapshot");
+    expect(result.current.run.reportDraft?.sequence).toBe(1);
+    act(() => stream.enqueue(line({ type: "research.cancelled" })));
+    act(() => stream.close());
+    await act(() => promise);
+  });
+
+  it.each([
+    ["duplicate", [0, 0]],
+    ["gap", [0, 2]],
+    ["out of order", [1]],
+  ] as const)("fails safely on a %s delta sequence while preserving the last legal draft", async (_name, sequences) => {
+    vi.useFakeTimers();
+    const cancelled = vi.fn();
+    const chunks = [
+      line({ type: "report.started", partial: false }),
+      ...sequences.map((sequence, index) =>
+        line({
+          type: "report.delta",
+          sequence,
+          mode: "append",
+          text: index === 0 && sequence === 0 ? "safe draft" : "provider-secret-raw-delta",
+        }),
+      ),
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(responseFromChunks(chunks, { onCancel: cancelled })),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.status).toBe("failed");
+    expect(result.current.run.error).toBe("Research stream protocol error.");
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: sequences[0] === 0 ? "safe draft" : "",
+      sequence: sequences[0] === 0 ? 0 : -1,
+      status: "incomplete",
+    });
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "report.started",
+      "research.failed",
+    ]);
+    expect(JSON.stringify(result.current.run)).not.toContain("provider-secret-raw-delta");
+    expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  it("force-flushes before validating, repairing, and a terminal event", async () => {
+    vi.useFakeTimers();
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+    let promise!: Promise<void>;
+    act(() => {
+      promise = result.current.start(input);
+    });
+    act(() => {
+      stream.enqueue(line({ type: "report.started", partial: false }));
+      stream.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "draft" }));
+      stream.enqueue(line({ type: "report.validating" }));
+    });
+    await drainStreamReads();
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: "draft",
+      sequence: 0,
+      status: "validating",
+    });
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "report.started",
+      "report.validating",
+    ]);
+
+    act(() => stream.enqueue(line({ type: "report.repairing" })));
+    await drainStreamReads();
+    expect(result.current.run.reportDraft?.status).toBe("repairing");
+    expect(result.current.run.events.at(-1)?.type).toBe("report.repairing");
+    act(() => stream.enqueue(line({ type: "report.completed", report })));
+    act(() => stream.close());
+    await act(() => promise);
+
+    expect(result.current.run.reportDraft).toBeUndefined();
+    expect(result.current.run.hadReportDraft).toBe(true);
+    expect(result.current.run.status).toBe("completed");
+  });
+
+  it.each([
+    ["report.completed", "completed"],
+    ["research.partial", "partial"],
+  ] as const)("clears a flushed draft on %s and remembers that streaming content existed", async (type, status) => {
+    vi.useFakeTimers();
+    const terminal: ResearchEvent =
+      type === "report.completed"
+        ? { type, report }
+        : { type, report, reason: "Source limit reached." };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromChunks([
+          line({ type: "report.started", partial: type === "research.partial" }),
+          line({ type: "report.delta", sequence: 0, mode: "append", text: "draft" }),
+          line(terminal),
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.status).toBe(status);
+    expect(result.current.run.reportDraft).toBeUndefined();
+    expect(result.current.run.hadReportDraft).toBe(true);
+  });
+
+  it.each([
+    ["research.failed", "failed"],
+    ["research.cancelled", "cancelled"],
+  ] as const)("force-flushes and preserves an incomplete draft on %s", async (type, status) => {
+    vi.useFakeTimers();
+    const terminal: ResearchEvent =
+      type === "research.failed"
+        ? { type, message: "Safe server error.", recoverable: true }
+        : { type };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromChunks([
+          line({ type: "report.started", partial: false }),
+          line({ type: "report.delta", sequence: 0, mode: "append", text: "unfinished" }),
+          line(terminal),
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.status).toBe(status);
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: "unfinished",
+      sequence: 0,
+      status: "incomplete",
+    });
+    expect(result.current.run.hadReportDraft).toBe(true);
+  });
+
+  it("starts with an empty streaming draft but does not claim content on a delta-free completion", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromChunks([
+          line({ type: "report.started", partial: false }),
+          line({ type: "report.completed", report }),
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.reportDraft).toBeUndefined();
+    expect(result.current.run.hadReportDraft).toBe(false);
+  });
+
+  it("clears buffered draft ownership on reset and a new generation", async () => {
+    vi.useFakeTimers();
+    const first = deferredResponse();
+    const second = deferredResponse();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(first.response)
+        .mockResolvedValueOnce(second.response),
+    );
+    const { result } = renderHook(() => useResearchStream());
+    let firstPromise!: Promise<void>;
+    let secondPromise!: Promise<void>;
+    act(() => {
+      firstPromise = result.current.start(input);
+    });
+    act(() => {
+      first.enqueue(line({ type: "report.started", partial: false }));
+      first.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "stale" }));
+    });
+    await drainStreamReads();
+
+    act(() => {
+      secondPromise = result.current.start({
+        ...input,
+        question: "What changed in JavaScript engines this year?",
+      });
+    });
+    expect(result.current.run.reportDraft).toBeUndefined();
+    expect(result.current.run.hadReportDraft).toBe(false);
+    act(() => vi.advanceTimersByTime(40));
+    expect(result.current.run.reportDraft).toBeUndefined();
+
+    act(() => second.enqueue(line({ type: "research.cancelled" })));
+    act(() => second.close());
+    await act(() => secondPromise);
+    first.error(new DOMException("aborted", "AbortError"));
+    await act(() => firstPromise);
+    act(() => result.current.reset());
+    expect(result.current.run).toMatchObject({
+      status: "idle",
+      events: [],
+      hadReportDraft: false,
+    });
+  });
+
+  it("retries with a fresh accumulator and ignores the previous generation's pending flush", async () => {
+    vi.useFakeTimers();
+    const first = deferredResponse();
+    const second = deferredResponse();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(first.response)
+        .mockResolvedValueOnce(second.response),
+    );
+    const { result } = renderHook(() => useResearchStream());
+    let firstPromise!: Promise<void>;
+    let retryPromise!: Promise<void>;
+    act(() => {
+      firstPromise = result.current.start(input);
+    });
+    act(() => {
+      first.enqueue(line({ type: "report.started", partial: false }));
+      first.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "stale retry draft" }));
+    });
+    await drainStreamReads();
+
+    act(() => {
+      retryPromise = result.current.retry();
+    });
+    expect(result.current.run.reportDraft).toBeUndefined();
+    expect(result.current.run.hadReportDraft).toBe(false);
+    act(() => vi.advanceTimersByTime(40));
+    expect(result.current.run.reportDraft).toBeUndefined();
+
+    act(() => second.enqueue(line({ type: "research.cancelled" })));
+    act(() => second.close());
+    await act(() => retryPromise);
+    first.error(new DOMException("aborted", "AbortError"));
+    await act(() => firstPromise);
+    expect(result.current.run.events).toEqual([
+      { type: "research.cancelled" },
+    ]);
+  });
+
+  it("cancels with an immediate incomplete flush and clears pending timers on unmount in Strict Mode", async () => {
+    vi.useFakeTimers();
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result, unmount } = renderHook(() => useResearchStream(), {
+      wrapper: StrictMode,
+    });
+    act(() => {
+      void result.current.start(input);
+    });
+    act(() => {
+      stream.enqueue(line({ type: "report.started", partial: false }));
+      stream.enqueue(line({ type: "report.delta", sequence: 0, mode: "append", text: "cancelled draft" }));
+    });
+    await drainStreamReads();
+
+    act(() => result.current.cancel());
+    expect(result.current.run.reportDraft).toEqual({
+      markdown: "cancelled draft",
+      sequence: 0,
+      status: "incomplete",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("reassembles split JSON, multiple records, and CRLF in event order", async () => {
     const first: ResearchEvent = {
       type: "plan.started",
@@ -205,6 +547,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "completed",
       events: [first, second, terminal],
+      hadReportDraft: false,
     });
   });
 
@@ -234,6 +577,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "completed",
       events: [chineseEvent, terminal],
+      hadReportDraft: false,
     });
   });
 
@@ -262,6 +606,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "failed",
       events: [prior, localFailure("Research stream protocol error.")],
+      hadReportDraft: false,
       error: "Research stream protocol error.",
     });
     expect(result.current.run.error).not.toContain("228");
@@ -305,7 +650,11 @@ describe("useResearchStream", () => {
       promise = result.current.start(input);
     });
 
-    expect(result.current.run).toEqual({ status: "running", events: [] });
+    expect(result.current.run).toEqual({
+      status: "running",
+      events: [],
+      hadReportDraft: false,
+    });
     expect(fetchMock).toHaveBeenCalledWith("/api/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -377,6 +726,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "failed",
       events: [localFailure("Research stream protocol error.")],
+      hadReportDraft: false,
       error: "Research stream protocol error.",
     });
     expect(stream.cancel).toHaveBeenCalledOnce();
@@ -414,6 +764,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "failed",
       events: [localFailure("Research request failed.")],
+      hadReportDraft: false,
       error: "Research request failed.",
     });
     expect(JSON.stringify(result.current.run)).not.toContain("provider-api-key-secret");
@@ -442,6 +793,7 @@ describe("useResearchStream", () => {
         { type: "plan.started", question: input.question },
         { type: "research.cancelled" },
       ],
+      hadReportDraft: false,
     });
   });
 
@@ -464,6 +816,7 @@ describe("useResearchStream", () => {
         prior,
         localFailure("Research stream protocol error."),
       ],
+      hadReportDraft: false,
       error: "Research stream protocol error.",
     });
   });
@@ -491,6 +844,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "failed",
       events: [prior, localFailure("Research stream protocol error.")],
+      hadReportDraft: false,
       error: "Research stream protocol error.",
     });
     expect(cancelled).toHaveBeenCalledOnce();
@@ -563,6 +917,7 @@ describe("useResearchStream", () => {
     expect(result.current.run).toEqual({
       status: "cancelled",
       events: [{ type: "research.cancelled" }],
+      hadReportDraft: false,
     });
   });
 
@@ -578,7 +933,11 @@ describe("useResearchStream", () => {
 
     act(() => result.current.reset());
 
-    expect(result.current.run).toEqual({ status: "idle", events: [] });
+    expect(result.current.run).toEqual({
+      status: "idle",
+      events: [],
+      hadReportDraft: false,
+    });
     expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
     stream.error(new DOMException("aborted", "AbortError"));
     await act(() => promise);
@@ -713,6 +1072,10 @@ describe("useResearchStream", () => {
     await act(() => result.current.retry());
 
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/research", expect.objectContaining({ body: JSON.stringify(input) }));
-    expect(result.current.run).toEqual({ status: "completed", events: [terminal] });
+    expect(result.current.run).toEqual({
+      status: "completed",
+      events: [terminal],
+      hadReportDraft: false,
+    });
   });
 });

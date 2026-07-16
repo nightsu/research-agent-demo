@@ -20,9 +20,17 @@ export type ResearchRunStatus =
   | "cancelled"
   | "failed";
 
+export interface ReportDraftState {
+  markdown: string;
+  sequence: number;
+  status: "streaming" | "validating" | "repairing" | "incomplete";
+}
+
 export interface ResearchRun {
   status: ResearchRunStatus;
   events: ResearchEvent[];
+  reportDraft?: ReportDraftState;
+  hadReportDraft: boolean;
   error?: string;
 }
 
@@ -30,11 +38,30 @@ type State = ResearchRun & { generation: number };
 type Action =
   | { type: "start"; generation: number }
   | { type: "event"; generation: number; event: ResearchEvent }
+  | {
+      type: "draft.flush";
+      generation: number;
+      markdown: string;
+      sequence: number;
+      hadReportDraft: boolean;
+    }
   | { type: "fail"; generation: number; error: string; recoverable: boolean }
   | { type: "cancel"; generation: number }
   | { type: "reset"; generation: number };
 
-const initialState: State = { status: "idle", events: [], generation: 0 };
+interface ReportAccumulator {
+  generation: number;
+  markdown: string;
+  nextSequence: number;
+  hadReportDraft: boolean;
+}
+
+const initialState: State = {
+  status: "idle",
+  events: [],
+  hadReportDraft: false,
+  generation: 0,
+};
 const terminalStatuses: Partial<
   Record<ResearchEvent["type"], ResearchRunStatus>
 > = {
@@ -59,12 +86,35 @@ function localFailureEvent(
 
 function reducer(state: State, action: Action): State {
   if (action.type === "start") {
-    return { status: "running", events: [], generation: action.generation };
+    return {
+      status: "running",
+      events: [],
+      hadReportDraft: false,
+      generation: action.generation,
+    };
   }
   if (action.type === "reset") {
-    return { status: "idle", events: [], generation: action.generation };
+    return {
+      status: "idle",
+      events: [],
+      hadReportDraft: false,
+      generation: action.generation,
+    };
   }
   if (action.generation !== state.generation) return state;
+
+  if (action.type === "draft.flush") {
+    if (!state.reportDraft) return state;
+    return {
+      ...state,
+      reportDraft: {
+        ...state.reportDraft,
+        markdown: action.markdown,
+        sequence: action.sequence,
+      },
+      hadReportDraft: state.hadReportDraft || action.hadReportDraft,
+    };
+  }
 
   if (action.type === "cancel") {
     if (state.status !== "running") return state;
@@ -76,6 +126,9 @@ function reducer(state: State, action: Action): State {
       events: state.events.some(isTerminal)
         ? state.events
         : [...state.events, event],
+      reportDraft: state.reportDraft
+        ? { ...state.reportDraft, status: "incomplete" }
+        : undefined,
       error: undefined,
     };
   }
@@ -88,15 +141,38 @@ function reducer(state: State, action: Action): State {
       events: state.events.some(isTerminal)
         ? state.events
         : [...state.events, event],
+      reportDraft: state.reportDraft
+        ? { ...state.reportDraft, status: "incomplete" }
+        : undefined,
       error: event.message,
     };
   }
 
   const status = terminalStatuses[action.event.type] ?? state.status;
+  let reportDraft = state.reportDraft;
+  if (action.event.type === "report.started") {
+    reportDraft = { markdown: "", sequence: -1, status: "streaming" };
+  } else if (action.event.type === "report.validating" && reportDraft) {
+    reportDraft = { ...reportDraft, status: "validating" };
+  } else if (action.event.type === "report.repairing" && reportDraft) {
+    reportDraft = { ...reportDraft, status: "repairing" };
+  } else if (
+    action.event.type === "report.completed" ||
+    action.event.type === "research.partial"
+  ) {
+    reportDraft = undefined;
+  } else if (
+    (action.event.type === "research.failed" ||
+      action.event.type === "research.cancelled") &&
+    reportDraft
+  ) {
+    reportDraft = { ...reportDraft, status: "incomplete" };
+  }
   return {
     ...state,
     status,
     events: [...state.events, action.event],
+    reportDraft,
     error:
       action.event.type === "research.failed"
         ? action.event.message
@@ -123,12 +199,53 @@ export function useResearchStream(): {
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const lastInputRef = useRef<ResearchRequest | null>(null);
+  const reportAccumulatorRef = useRef<ReportAccumulator | null>(null);
+  const reportFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [canRetry, setCanRetry] = useState(false);
 
   const isCurrent = useCallback(
     (generation: number) =>
       mountedRef.current && generationRef.current === generation,
     [],
+  );
+
+  const clearReportFlushTimer = useCallback(() => {
+    if (reportFlushTimerRef.current === null) return;
+    clearTimeout(reportFlushTimerRef.current);
+    reportFlushTimerRef.current = null;
+  }, []);
+
+  const clearReportBuffer = useCallback(() => {
+    clearReportFlushTimer();
+    reportAccumulatorRef.current = null;
+  }, [clearReportFlushTimer]);
+
+  const flushReportDraft = useCallback(
+    (generation: number) => {
+      if (!isCurrent(generation)) return;
+      const accumulator = reportAccumulatorRef.current;
+      if (!accumulator || accumulator.generation !== generation) return;
+      clearReportFlushTimer();
+      dispatch({
+        type: "draft.flush",
+        generation,
+        markdown: accumulator.markdown,
+        sequence: accumulator.nextSequence - 1,
+        hadReportDraft: accumulator.hadReportDraft,
+      });
+    },
+    [clearReportFlushTimer, isCurrent],
+  );
+
+  const scheduleReportFlush = useCallback(
+    (generation: number) => {
+      if (reportFlushTimerRef.current !== null) return;
+      reportFlushTimerRef.current = setTimeout(() => {
+        reportFlushTimerRef.current = null;
+        flushReportDraft(generation);
+      }, 40);
+    },
+    [flushReportDraft],
   );
 
   useEffect(() => {
@@ -138,12 +255,14 @@ export function useResearchStream(): {
       generationRef.current += 1;
       controllerRef.current?.abort();
       controllerRef.current = null;
+      clearReportBuffer();
     };
-  }, []);
+  }, [clearReportBuffer]);
 
   const start = useCallback(
     async (rawInput: ResearchRequest) => {
       controllerRef.current?.abort();
+      clearReportBuffer();
       const generation = ++generationRef.current;
       const parsed = researchInputSchema.safeParse(rawInput);
 
@@ -219,8 +338,48 @@ export function useResearchStream(): {
             throw new ProtocolError();
           }
           if (!isCurrent(generation)) return;
+
+          if (event.type === "report.started") {
+            clearReportFlushTimer();
+            reportAccumulatorRef.current = {
+              generation,
+              markdown: "",
+              nextSequence: 0,
+              hadReportDraft: false,
+            };
+          } else if (event.type === "report.delta") {
+            const accumulator = reportAccumulatorRef.current;
+            // 序号必须无缝递增；重复、倒序或跳号都说明草稿快照已不再可信。
+            if (
+              !accumulator ||
+              accumulator.generation !== generation ||
+              event.sequence !== accumulator.nextSequence
+            ) {
+              throw new ProtocolError();
+            }
+            accumulator.markdown =
+              event.mode === "append"
+                ? accumulator.markdown + event.text
+                : event.text;
+            accumulator.nextSequence += 1;
+            accumulator.hadReportDraft = true;
+            scheduleReportFlush(generation);
+            // delta 只属于瞬态草稿，不进入持久事件日志，避免高频正文污染 Printer。
+            return;
+          } else if (
+            event.type === "report.validating" ||
+            event.type === "report.repairing" ||
+            isTerminal(event)
+          ) {
+            // 状态切换和终止事件必须先强制刷新，确保 UI 不会落后于最后一段正文。
+            flushReportDraft(generation);
+          }
           dispatch({ type: "event", generation, event });
           terminalSeen = isTerminal(event);
+          if (terminalSeen) {
+            clearReportFlushTimer();
+            reportAccumulatorRef.current = null;
+          }
         };
 
         while (true) {
@@ -251,6 +410,7 @@ export function useResearchStream(): {
 
         if (buffer.length > 0) throw new ProtocolError();
         if (!terminalSeen && isCurrent(generation)) {
+          flushReportDraft(generation);
           dispatch({
             type: "fail",
             generation,
@@ -262,6 +422,7 @@ export function useResearchStream(): {
         if (!isCurrent(generation)) return;
         if (error instanceof ProtocolError || error instanceof SyntaxError) {
           protocolFailure = true;
+          flushReportDraft(generation);
           dispatch({
             type: "fail",
             generation,
@@ -269,8 +430,10 @@ export function useResearchStream(): {
             recoverable: true,
           });
         } else if (controller.signal.aborted) {
+          flushReportDraft(generation);
           dispatch({ type: "cancel", generation });
         } else {
+          flushReportDraft(generation);
           dispatch({
             type: "fail",
             generation,
@@ -298,24 +461,34 @@ export function useResearchStream(): {
         if (isCurrent(generation)) controllerRef.current = null;
       }
     },
-    [isCurrent],
+    [
+      clearReportBuffer,
+      clearReportFlushTimer,
+      flushReportDraft,
+      isCurrent,
+      scheduleReportFlush,
+    ],
   );
 
   const cancel = useCallback(() => {
     const controller = controllerRef.current;
     if (!controller) return;
-    dispatch({ type: "cancel", generation: generationRef.current });
+    const generation = generationRef.current;
+    flushReportDraft(generation);
+    dispatch({ type: "cancel", generation });
     generationRef.current += 1;
     controller.abort();
     controllerRef.current = null;
-  }, []);
+    clearReportBuffer();
+  }, [clearReportBuffer, flushReportDraft]);
 
   const reset = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
+    clearReportBuffer();
     const generation = ++generationRef.current;
     dispatch({ type: "reset", generation });
-  }, []);
+  }, [clearReportBuffer]);
 
   const retry = useCallback(async () => {
     const input = lastInputRef.current;
@@ -324,9 +497,12 @@ export function useResearchStream(): {
     await start(input);
   }, [start]);
 
-  const run: ResearchRun =
-    state.error === undefined
-      ? { status: state.status, events: state.events }
-      : { status: state.status, events: state.events, error: state.error };
+  const run: ResearchRun = {
+    status: state.status,
+    events: state.events,
+    hadReportDraft: state.hadReportDraft,
+    ...(state.reportDraft ? { reportDraft: state.reportDraft } : {}),
+    ...(state.error === undefined ? {} : { error: state.error }),
+  };
   return { run, start, retry, canRetry, cancel, reset };
 }
