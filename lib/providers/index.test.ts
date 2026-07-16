@@ -1,10 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { createOpenAICompatible } = vi.hoisted(() => ({
+const { createOpenAICompatible, getModelCapabilities } = vi.hoisted(() => ({
   createOpenAICompatible: vi.fn(),
+  getModelCapabilities: vi.fn(),
 }));
 
 vi.mock("@ai-sdk/openai-compatible", () => ({ createOpenAICompatible }));
+vi.mock("./model-capabilities", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./model-capabilities")>();
+  getModelCapabilities.mockImplementation(actual.getModelCapabilities);
+
+  return { ...actual, getModelCapabilities };
+});
 
 const originalEnv = { ...process.env };
 
@@ -12,6 +19,7 @@ describe("research provider selection", () => {
   beforeEach(() => {
     vi.resetModules();
     createOpenAICompatible.mockReset();
+    getModelCapabilities.mockClear();
     process.env = { ...originalEnv };
     delete process.env.AI_PROVIDER;
     delete process.env.MOONSHOT_API_KEY;
@@ -91,6 +99,7 @@ describe("research provider selection", () => {
       name: "deepseek",
       apiKey: "deepseek-key",
       baseURL: "https://api.deepseek.com",
+      supportsStructuredOutputs: false,
     });
     expect(provider).toHaveBeenCalledWith("deepseek-v4-flash");
   });
@@ -118,6 +127,7 @@ describe("research provider selection", () => {
         name: "deepseek",
         apiKey: "override-key",
         baseURL: "https://override.example/v1",
+        supportsStructuredOutputs: false,
       },
     },
   ])("honors $providerName environment overrides", async ({
@@ -155,6 +165,41 @@ describe("research provider selection", () => {
       expect(transformRequestBody(requestBody)).toBe(requestBody);
     }
     expect(provider).toHaveBeenCalledWith("override-model");
+  });
+
+  it("propagates a future native structured-output capability to the adapter", async () => {
+    process.env.AI_PROVIDER = "deepseek";
+    process.env.DEEPSEEK_API_KEY = "deepseek-key";
+    process.env.DEEPSEEK_MODEL = "future-native-model";
+    const capabilities = {
+      structuredOutputs: true,
+      thinkingMode: "enabled" as const,
+    };
+    getModelCapabilities.mockReturnValueOnce(capabilities);
+    const model = { provider: "future-native-model" };
+    const provider = vi.fn(() => model);
+    createOpenAICompatible.mockReturnValue(provider);
+
+    const { getResearchModelSelection } = await import("./index");
+
+    const selection = getResearchModelSelection();
+
+    expect(getModelCapabilities).toHaveBeenCalledOnce();
+    expect(getModelCapabilities).toHaveBeenCalledWith(
+      "deepseek",
+      "future-native-model",
+    );
+    expect(selection).toEqual({ model, capabilities });
+    expect(selection.capabilities).toBe(capabilities);
+    expect(createOpenAICompatible).toHaveBeenCalledOnce();
+    expect(createOpenAICompatible).toHaveBeenCalledWith({
+      name: "deepseek",
+      apiKey: "deepseek-key",
+      baseURL: "https://api.deepseek.com",
+      supportsStructuredOutputs: true,
+    });
+    expect(provider).toHaveBeenCalledOnce();
+    expect(provider).toHaveBeenCalledWith("future-native-model");
   });
 
   it("rejects unsupported providers with a clear error", async () => {

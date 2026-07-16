@@ -62,6 +62,7 @@ export function getResearchModelSelection() {
     name: "deepseek",
     apiKey: requireApiKey("deepseek", "DEEPSEEK_API_KEY"),
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
+    supportsStructuredOutputs: capabilities.structuredOutputs,
   });
 
   return {
