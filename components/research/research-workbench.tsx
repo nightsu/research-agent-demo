@@ -21,8 +21,23 @@ interface ScrollOwner {
   scrollTo(top: number): void;
 }
 
-function getResponsiveScrollOwner(workspace: HTMLDivElement | null): ScrollOwner | undefined {
-  const mobile = typeof window.matchMedia === "function" && window.matchMedia(MOBILE_SCROLL_QUERY).matches;
+interface ResponsiveScrollConfig {
+  initialMobile: boolean;
+  mediaQuery?: MediaQueryList;
+}
+
+function createResponsiveScrollConfig(): ResponsiveScrollConfig {
+  if (typeof window === "undefined") return { initialMobile: false };
+  const mediaQuery = typeof window.matchMedia === "function"
+    ? window.matchMedia(MOBILE_SCROLL_QUERY)
+    : undefined;
+  return {
+    initialMobile: mediaQuery?.matches ?? window.innerWidth <= 960,
+    mediaQuery,
+  };
+}
+
+function getResponsiveScrollOwner(workspace: HTMLDivElement | null, mobile: boolean): ScrollOwner | undefined {
   if (mobile) {
     const scrollingElement = document.scrollingElement ?? document.documentElement;
     return {
@@ -49,6 +64,9 @@ function getResponsiveScrollOwner(workspace: HTMLDivElement | null): ScrollOwner
 
 export function ResearchWorkbench() {
   const { run, start, retry, canRetry, cancel, reset } = useResearchStream();
+  const [responsiveScrollConfig] = useState(createResponsiveScrollConfig);
+  const mobileScrollOwnerRef = useRef(responsiveScrollConfig.initialMobile);
+  const mediaQuery = responsiveScrollConfig.mediaQuery;
   const [selectedSourceId, setSelectedSourceId] = useState<string>();
   const view = useMemo(() => deriveResearchViewModel(run.events), [run.events]);
   const records = useMemo(() => derivePrinterRecords(run.events), [run.events]);
@@ -69,11 +87,11 @@ export function ResearchWorkbench() {
   const selectedIdentity = selectedSourceId ? (view.sourceIdentityById.get(selectedSourceId) ?? selectedSourceId) : undefined;
   const selectedSource = view.sources.find((source) => source.id === selectedIdentity);
   const scrollOwnerToBottom = useCallback(() => {
-    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    const owner = getResponsiveScrollOwner(workspaceRef.current, mobileScrollOwnerRef.current);
     if (owner) owner.scrollTo(owner.metrics.scrollHeight);
   }, []);
   const scrollReportSurfaceToTop = useCallback(() => {
-    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    const owner = getResponsiveScrollOwner(workspaceRef.current, mobileScrollOwnerRef.current);
     if (!owner) return;
     const top = owner.kind === "document"
       ? (workspaceDocumentRef.current?.getBoundingClientRect().top ?? 0) + owner.metrics.scrollTop
@@ -81,7 +99,7 @@ export function ResearchWorkbench() {
     owner.scrollTo(top);
   }, []);
   const updateFollowingFromScrollPosition = useCallback(() => {
-    const owner = getResponsiveScrollOwner(workspaceRef.current);
+    const owner = getResponsiveScrollOwner(workspaceRef.current, mobileScrollOwnerRef.current);
     if (!owner) return;
     const { scrollHeight, scrollTop, clientHeight } = owner.metrics;
     setFollowingLatest(
@@ -122,8 +140,30 @@ export function ResearchWorkbench() {
   }, [followingLatest, reportSurface, run.events.length, run.reportDraft, scrollOwnerToBottom, scrollReportSurfaceToTop]);
 
   useEffect(() => {
+    const migrateScrollOwner = (mobile: boolean) => {
+      if (mobileScrollOwnerRef.current === mobile) return;
+      // 布局跨过断点时迁移的是唯一 scroll owner；暂停/跟随意图随 owner 一起保留。
+      mobileScrollOwnerRef.current = mobile;
+      if (followingLatestRef.current) scrollOwnerToBottom();
+    };
+    if (mediaQuery) {
+      const onMediaChange = (event: MediaQueryListEvent) => migrateScrollOwner(event.matches);
+      if (typeof mediaQuery.addEventListener === "function") {
+        mediaQuery.addEventListener("change", onMediaChange);
+        return () => mediaQuery.removeEventListener("change", onMediaChange);
+      }
+      mediaQuery.addListener(onMediaChange);
+      return () => mediaQuery.removeListener(onMediaChange);
+    }
+
+    const onResize = () => migrateScrollOwner(window.innerWidth <= 960);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [mediaQuery, scrollOwnerToBottom]);
+
+  useEffect(() => {
     const onWindowScroll = () => {
-      if (typeof window.matchMedia === "function" && window.matchMedia(MOBILE_SCROLL_QUERY).matches) {
+      if (mobileScrollOwnerRef.current) {
         updateFollowingFromScrollPosition();
       }
     };
