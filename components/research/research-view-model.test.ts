@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ResearchEvent } from "@/lib/agent/research-events";
 import type { Source, SourceEvaluation } from "@/lib/agent/research-types";
 
-import { deriveResearchViewModel } from "./research-view-model";
+import { deriveResearchViewModel, eventStatusLabel } from "./research-view-model";
 
 const sourceA: Source = {
   id: "a",
@@ -42,6 +42,22 @@ function evaluated(
 }
 
 describe("deriveResearchViewModel", () => {
+  it.each([
+    [{ type: "report.delta", sequence: 0, mode: "append", text: "# Draft" } as const, "Report draft updated"],
+    [{ type: "report.validating" } as const, "Report validating"],
+    [{ type: "report.repairing" } as const, "Report repairing"],
+  ])("labels $event.type as a public report status", (event, label) => {
+    expect(eventStatusLabel(event)).toBe(label);
+  });
+
+  it.each([
+    { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" } as const,
+    { type: "report.validating" } as const,
+    { type: "report.repairing" } as const,
+  ])("keeps $type in the synthesizing phase", (event) => {
+    expect(deriveResearchViewModel([event]).currentPhase).toBe("synthesizing");
+  });
+
   it("counts the latest accepted decisions across repeated search rounds", () => {
     const view = deriveResearchViewModel(
       [search([sourceA]), evaluated("a", "accepted"), search([sourceA, sourceB]), evaluated("a", "accepted"), evaluated("b", "accepted")],
@@ -74,6 +90,25 @@ describe("deriveResearchViewModel", () => {
     expect(view.sources.map((item) => item.id)).toEqual(["a"]);
     expect(view.counters).toEqual({ sources: 1, accepted: 1, rejected: 0 });
     expect(view.evaluations.get("a")?.sourceId).toBe("a-alias");
+  });
+
+  it("numbers only latest accepted identities and gives aliases the canonical number", () => {
+    const alias: Source = {
+      ...sourceA,
+      id: "a-alias",
+      url: "https://example.com/article#accepted",
+    };
+    const view = deriveResearchViewModel([
+      search([sourceB, sourceA]),
+      search([alias]),
+      evaluated(sourceB.id, "rejected"),
+      evaluated(alias.id, "accepted"),
+    ]);
+
+    expect(view.sources.map((source) => source.id)).toEqual(["b", "a"]);
+    expect(view.citationNumbers.get(sourceB.id)).toBeUndefined();
+    expect(view.citationNumbers.get(sourceA.id)).toBe(1);
+    expect(view.citationNumbers.get(alias.id)).toBe(1);
   });
 
   it("uses the latest workflow event so a follow-up search returns to searching", () => {

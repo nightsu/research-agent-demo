@@ -1,4 +1,4 @@
-import { generateText, NoObjectGeneratedError, Output } from "ai";
+import { generateText, NoObjectGeneratedError, Output, streamText } from "ai";
 import { toJSONSchema, z, ZodError, type ZodType } from "zod";
 
 import {
@@ -19,7 +19,9 @@ import {
   reportPrompt,
   sourceEvaluationPrompt,
 } from "../agent/prompts";
-import { getResearchModel } from "./index";
+import type { PartialResearchReport } from "../agent/report-draft";
+import { getResearchModelSelection } from "./index";
+import type { ModelCapabilities } from "./model-capabilities";
 
 export interface ResearchModel {
   generatePlan(
@@ -42,13 +44,28 @@ export interface ResearchModel {
     sources: Source[],
     evaluations: SourceEvaluation[],
     partial: boolean,
-    options?: ResearchModelOptions,
+    options?: ResearchReportModelOptions,
   ): Promise<ResearchReport>;
 }
 
 export interface ResearchModelOptions {
   abortSignal?: AbortSignal;
   onModelCall?: () => void;
+}
+
+export interface ResearchReportModelOptions extends ResearchModelOptions {
+  /**
+   * Receives structured report snapshots in generation order. Implementations
+   * must invoke and await this callback serially: Agent diff/sequence state and
+   * route transport backpressure both depend on the previous delivery settling.
+   */
+  onPartialReport?: (
+    partial: PartialResearchReport,
+  ) => void | Promise<void>;
+  /** Called only after every prior partial callback settles, and must be awaited. */
+  onValidating?: () => void | Promise<void>;
+  /** Called after validation and prior partial callbacks settle, and must be awaited. */
+  onRepairing?: () => void | Promise<void>;
 }
 
 export class MissingStructuredOutputError extends Error {
@@ -61,6 +78,28 @@ export class MissingStructuredOutputError extends Error {
 const sourceEvaluationsSchema = sourceEvaluationSchema.array().max(50);
 const sourceEvaluationsOutputSchema = z.object({
   evaluations: sourceEvaluationsSchema,
+});
+const partialReportFindingSchema = z.object({
+  claim: reportSchema.shape.findings.element.shape.claim.optional(),
+  sourceIds: z
+    .array(
+      reportSchema.shape.findings.element.shape.sourceIds.element.optional(),
+    )
+    .optional(),
+  confidence:
+    reportSchema.shape.findings.element.shape.confidence.optional(),
+});
+const partialReportSchema = z.object({
+  title: reportSchema.shape.title.optional(),
+  executiveSummary: reportSchema.shape.executiveSummary.optional(),
+  findings: z.array(partialReportFindingSchema.optional()).optional(),
+  trends: z.array(reportSchema.shape.trends.element.optional()).optional(),
+  disagreements: z
+    .array(reportSchema.shape.disagreements.element.optional())
+    .optional(),
+  limitations: z
+    .array(reportSchema.shape.limitations.element.optional())
+    .optional(),
 });
 
 function appendJsonContract<T>(prompt: string, schema: ZodType<T>): string {
@@ -83,6 +122,12 @@ function isRepairableStructuredOutputError(error: unknown): boolean {
     NoObjectGeneratedError.isInstance(error) ||
     error instanceof ZodError
   );
+}
+
+function createRepairPrompt(prompt: string): string {
+  return `${prompt}
+
+Repair instruction: the previous generation failed validation. Generate the full response again and satisfy the exact structured output constraints. Do not discuss the failure.`;
 }
 
 export function validateSourceEvaluations(
@@ -183,25 +228,17 @@ async function generateValidated<T>(
   options: ResearchModelOptions = {},
   validate: (output: T) => T = (output) => output,
 ): Promise<T> {
-  const model = getResearchModel();
+  const { model } = getResearchModelSelection();
 
   const attempt = async (attemptPrompt: string): Promise<T> => {
-    options.onModelCall?.();
-    const result = await generateText({
+    return generateStructuredAttempt(
       model,
-      system: RESEARCH_SYSTEM_PROMPT,
-      prompt: appendJsonContract(attemptPrompt, schema),
-      output: Output.json(),
-      abortSignal: options.abortSignal,
+      schema,
+      attemptPrompt,
       maxOutputTokens,
-    });
-
-    if (result.output == null) {
-      throw new MissingStructuredOutputError();
-    }
-
-    // Output.json parses JSON syntax; Zod remains the final application boundary.
-    return validate(schema.parse(result.output));
+      options,
+      validate,
+    );
   };
 
   try {
@@ -213,13 +250,143 @@ async function generateValidated<T>(
 
     // Only malformed structured output gets one repair generation. Transport,
     // authentication, rate-limit, and cancellation failures remain single-call.
-    const repairPrompt = `${prompt}
+    try {
+      return await attempt(createRepairPrompt(prompt));
+    } catch (repairError) {
+      throw new AggregateError(
+        [initialError, repairError],
+        "Structured generation failed after one repair attempt",
+      );
+    }
+  }
+}
 
-Repair instruction: the previous generation failed validation. Generate the full response again and satisfy the exact structured output constraints. Do not discuss the failure.`;
+async function generateStructuredAttempt<T>(
+  model: ReturnType<typeof getResearchModelSelection>["model"],
+  schema: ZodType<T>,
+  prompt: string,
+  maxOutputTokens: number,
+  options: ResearchModelOptions,
+  validate: (output: T) => T,
+): Promise<T> {
+  options.onModelCall?.();
+  const result = await generateText({
+    model,
+    system: RESEARCH_SYSTEM_PROMPT,
+    prompt: appendJsonContract(prompt, schema),
+    output: Output.json(),
+    abortSignal: options.abortSignal,
+    maxOutputTokens,
+  });
+
+  if (result.output == null) {
+    throw new MissingStructuredOutputError();
+  }
+
+  // Output.json parses JSON syntax; Zod remains the final application boundary.
+  return validate(schema.parse(result.output));
+}
+
+async function settleStructuredOutput(result: {
+  readonly output: PromiseLike<unknown>;
+}): Promise<void> {
+  try {
+    await result.output;
+  } catch {
+    // 这里只负责释放 tee 分支，cleanup 错误不能覆盖调用方真正需要处理的首个错误。
+  }
+}
+
+function createStreamingReportOutputStrategy(
+  prompt: string,
+  capabilities: ModelCapabilities,
+) {
+  if (capabilities.structuredOutputs) {
+    return {
+      prompt,
+      output: Output.object({ schema: reportSchema }),
+    };
+  }
+
+  return {
+    prompt: appendJsonContract(prompt, reportSchema),
+    output: Output.json(),
+  };
+}
+
+async function generateStreamingReport(
+  prompt: string,
+  sources: Source[],
+  evaluations: SourceEvaluation[],
+  options: ResearchReportModelOptions = {},
+): Promise<ResearchReport> {
+  const { model, capabilities } = getResearchModelSelection();
+  const strategy = createStreamingReportOutputStrategy(prompt, capabilities);
+  const streamAbortController = new AbortController();
+  const streamAbortSignal = options.abortSignal
+    ? AbortSignal.any([options.abortSignal, streamAbortController.signal])
+    : streamAbortController.signal;
+
+  options.onModelCall?.();
+  const result = streamText({
+    model,
+    system: RESEARCH_SYSTEM_PROMPT,
+    prompt: strategy.prompt,
+    output: strategy.output,
+    abortSignal: streamAbortSignal,
+    maxOutputTokens: 12_000,
+  });
+
+  try {
+    for await (const partial of result.partialOutputStream) {
+      const parsedPartial = partialReportSchema.safeParse(partial);
+      if (parsedPartial.success) {
+        // partial 校验只负责类型安全收窄，不要求字段完整；无效快照跳过，由最终 Zod 校验或 repair 接管。
+        await options.onPartialReport?.(parsedPartial.data);
+      }
+    }
+  } catch (streamError) {
+    streamAbortController.abort(streamError);
+
+    // partial 分支提前退出后必须收走 tee 的 output 分支，否则 SDK 会继续缓冲。
+    await settleStructuredOutput(result);
+
+    throw streamError;
+  }
+
+  try {
+    await options.onValidating?.();
+  } catch (validatingError) {
+    await settleStructuredOutput(result);
+    throw validatingError;
+  }
+
+  try {
+    const output = await result.output;
+    const report = reportSchema.parse(output);
+    return validateReportCitations(sources, evaluations, report);
+  } catch (initialError) {
+    if (!isRepairableStructuredOutputError(initialError)) {
+      throw initialError;
+    }
+
+    await options.onRepairing?.();
 
     try {
-      return await attempt(repairPrompt);
+      // 第二次生成仅用于修复最终结构，不能重播另一份草稿去清空或反转用户正在阅读的内容。
+      return await generateStructuredAttempt(
+        model,
+        reportSchema,
+        createRepairPrompt(prompt),
+        12_000,
+        options,
+        (output) => validateReportCitations(sources, evaluations, output),
+      );
     } catch (repairError) {
+      if (!isRepairableStructuredOutputError(repairError)) {
+        throw repairError;
+      }
+
       throw new AggregateError(
         [initialError, repairError],
         "Structured generation failed after one repair attempt",
@@ -264,17 +431,16 @@ export function createResearchModel(): ResearchModel {
     generateReport(question, sources, evaluations, partial, options) {
       const accepted = selectAcceptedEvidence(sources, evaluations);
 
-      return generateValidated(
-        reportSchema,
+      return generateStreamingReport(
         reportPrompt(
           question,
           accepted.sources,
           accepted.evaluations,
           partial,
         ),
-        12_000,
+        sources,
+        evaluations,
         options,
-        (output) => validateReportCitations(sources, evaluations, output),
       );
     },
   };

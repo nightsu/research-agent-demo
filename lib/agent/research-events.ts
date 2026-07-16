@@ -66,6 +66,18 @@ export const researchEventSchema = z.discriminatedUnion("type", [
     partial: z.boolean(),
   }),
   z.strictObject({
+    type: z.literal("report.delta"),
+    sequence: z.number().int().nonnegative(),
+    mode: z.enum(["append", "replace"]),
+    text: z.string().min(1),
+  }),
+  z.strictObject({
+    type: z.literal("report.validating"),
+  }),
+  z.strictObject({
+    type: z.literal("report.repairing"),
+  }),
+  z.strictObject({
     type: z.literal("report.completed"),
     report: reportSchema,
   }),

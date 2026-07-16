@@ -9,19 +9,19 @@ export type ModelCapabilities = Readonly<{
 
 type ModelKey = `${ProviderName}:${string}`;
 
-const CONSERVATIVE_DEFAULT: ModelCapabilities = {
+const CONSERVATIVE_DEFAULT: ModelCapabilities = Object.freeze({
   structuredOutputs: false,
   thinkingMode: "enabled",
-};
+});
 
 const MODEL_CAPABILITIES: Readonly<
   Partial<Record<ModelKey, ModelCapabilities>>
-> = {
-  "kimi:kimi-k2.6": {
+> = Object.freeze({
+  "kimi:kimi-k2.6": Object.freeze({
     structuredOutputs: false,
     thinkingMode: "disabled",
-  },
-};
+  }),
+});
 
 export function getModelCapabilities(
   providerName: ProviderName,

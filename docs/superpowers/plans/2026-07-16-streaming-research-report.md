@@ -4,7 +4,7 @@
 
 **Goal:** Stream the final structured research report as a real, continuously growing Markdown draft, preserve strict report and citation validation, and replace the draft with the existing formal report without changing the workspace scroll ownership.
 
-**Architecture:** AI SDK 6 `streamText` produces `partialOutputStream` snapshots for the existing `reportSchema`. The server projects each partial report into deterministic Markdown and emits append-or-replace NDJSON updates; the client validates sequence numbers, keeps the high-frequency draft outside `run.events`, batches React updates every 40 ms, and renders the draft with standalone Streamdown. The existing `ResearchWorkbench` remains the right scroll owner and swaps the validated `ResearchReportView` into the same document flow.
+**Architecture:** AI SDK 6 performs one `streamText` report call and selects its output contract from `ModelCapabilities`: native structured-output models use `Output.object({ schema: reportSchema })` / `json_schema`, while prompted models use `appendJsonContract + Output.json()` / `json_object`, local deep-partial Zod filtering, and final full `reportSchema` validation. The server projects each valid partial report into deterministic Markdown and emits append-or-replace NDJSON updates; the client validates sequence numbers, keeps the high-frequency draft outside `run.events`, batches React updates every 40 ms, and renders the draft with standalone Streamdown. The existing `ResearchWorkbench` remains the right scroll owner and swaps the validated `ResearchReportView` into the same document flow.
 
 **Tech Stack:** Next.js 16.2 local App Router conventions, React 19.2, TypeScript 5, AI SDK 6.0, Zod 4, NDJSON `ReadableStream`, standalone `streamdown`, Vitest 4, Testing Library.
 
@@ -51,7 +51,7 @@ The approved specification is `docs/superpowers/specs/2026-07-16-streaming-resea
 - Modify: `lib/agent/research-events.ts`
 - Modify: `lib/agent/research-events.test.ts`
 
-- [ ] **Step 1: Read the repository and framework constraints**
+- [x] **Step 1: Read the repository and framework constraints**
 
 Run:
 
@@ -64,7 +64,7 @@ sed -n '1,220p' node_modules/next/dist/docs/01-app/01-getting-started/11-css.md
 
 Expected: the local Next.js 16 guides are readable; implementation follows those files instead of remembered Next.js conventions.
 
-- [ ] **Step 2: Write failing projection tests**
+- [x] **Step 2: Write failing projection tests**
 
 Create `lib/agent/report-draft.test.ts` with a real citation map and these cases:
 
@@ -123,7 +123,7 @@ describe("report draft projection", () => {
 });
 ```
 
-- [ ] **Step 3: Write failing protocol tests**
+- [x] **Step 3: Write failing protocol tests**
 
 Extend `lib/agent/research-events.test.ts` with strict parsing tests:
 
@@ -153,7 +153,7 @@ it.each([
 });
 ```
 
-- [ ] **Step 4: Run the new tests to verify RED**
+- [x] **Step 4: Run the new tests to verify RED**
 
 Run:
 
@@ -163,7 +163,7 @@ npm test -- lib/agent/report-draft.test.ts lib/agent/research-events.test.ts
 
 Expected: FAIL because `report-draft.ts`, `report.delta`, `report.validating`, and `report.repairing` do not exist.
 
-- [ ] **Step 5: Implement the pure projector and schemas**
+- [x] **Step 5: Implement the pure projector and schemas**
 
 Create `PartialResearchReport` with optional top-level fields and optional nested finding fields. Implement deterministic Markdown generation in this order: title, Executive summary, Key findings, Trends, Disagreements, Limitations. Use plain `[n]` citation text from the supplied map and omit unknown IDs. Implement `createReportDraftUpdate(previous, current)` exactly as tested.
 
@@ -186,7 +186,7 @@ z.strictObject({
 
 Do not add URLs, raw model JSON, provider errors or private reasoning to the Markdown projector. Add a Chinese comment above append/replace selection explaining that partial structured output usually grows but is not a protocol invariant.
 
-- [ ] **Step 6: Run focused tests and static checks**
+- [x] **Step 6: Run focused tests and static checks**
 
 Run:
 
@@ -199,7 +199,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 7: Commit the protocol slice**
+- [x] **Step 7: Commit the protocol slice**
 
 ```bash
 git add lib/agent/report-draft.ts lib/agent/report-draft.test.ts lib/agent/research-events.ts lib/agent/research-events.test.ts
@@ -212,7 +212,7 @@ git commit -m "feat: define streaming report draft protocol"
 - Modify: `lib/providers/research-model.ts`
 - Modify: `lib/providers/research-model.test.ts`
 
-- [ ] **Step 1: Write failing provider stream tests**
+- [x] **Step 1: Write failing provider stream tests**
 
 Update the hoisted AI SDK mock to expose `streamText` and `Output.object`. Add tests that use a controlled async iterable:
 
@@ -259,7 +259,7 @@ Add three more tests:
 - a repairable final-output failure calls `onRepairing` once, performs one `generateText` repair, and does not stream repair partials;
 - transport or abort failure does not call `onRepairing` or `generateText`, and its raw provider message never enters a public event fixture.
 
-- [ ] **Step 2: Run provider tests to verify RED**
+- [x] **Step 2: Run provider tests to verify RED**
 
 Run:
 
@@ -269,7 +269,7 @@ npm test -- lib/providers/research-model.test.ts
 
 Expected: FAIL because the model uses `generateText` only and `ResearchModelOptions` has no report callbacks.
 
-- [ ] **Step 3: Add report-specific model options**
+- [x] **Step 3: Add report-specific model options**
 
 Define:
 
@@ -283,7 +283,7 @@ export interface ResearchReportModelOptions extends ResearchModelOptions {
 
 Change only `ResearchModel.generateReport` to accept `ResearchReportModelOptions`. Keep Plan, source evaluation and evidence assessment on `ResearchModelOptions`.
 
-- [ ] **Step 4: Implement one streaming attempt and one hidden repair**
+- [x] **Step 4: Implement one streaming attempt and one hidden repair**
 
 Use `streamText` with `Output.object({ schema: reportSchema })`. Call `onModelCall` once before starting the stream. Consume `partialOutputStream` with `for await`, await each `onPartialReport`, then await final `output` and call `validateReportCitations`.
 
@@ -296,7 +296,9 @@ After `partialOutputStream` ends, await `onValidating` before awaiting and valid
 
 Transport, authentication, rate-limit and abort failures remain single-call failures. Add a Chinese comment explaining why the second attempt is hidden: replaying a second visible draft would clear or contradict text the user is already reading.
 
-- [ ] **Step 5: Run provider tests and checks**
+> **Implementation deviation and root-cause correction (post-plan):** The original step assumed every OpenAI-compatible model accepted `Output.object` / `json_schema`. Live Kimi evidence at `f8f2119` disproved that assumption. Commit `6dd8d76` added the prompted streaming report branch (`appendJsonContract + Output.json`); `9f9d4d6` propagated explicit Kimi / DeepSeek `ModelCapabilities`; `aa3b2d8` added local deep-partial Zod filtering for prompted snapshots and retained full final `reportSchema` validation. The native branch still follows this step for `structuredOutputs: true`; the prompted branch preserves the same one-call, real-partial product semantics with a compatible wire contract.
+
+- [x] **Step 5: Run provider tests and checks**
 
 Run:
 
@@ -309,7 +311,7 @@ git diff --check
 
 Expected: all commands exit 0; tests prove exactly one normal stream and at most one repair call.
 
-- [ ] **Step 6: Commit the provider slice**
+- [x] **Step 6: Commit the provider slice**
 
 ```bash
 git add lib/providers/research-model.ts lib/providers/research-model.test.ts
@@ -327,7 +329,7 @@ git commit -m "feat: stream structured research reports"
 - Modify: `app/api/research/route.test.ts`
 - Modify: `app/api/research/research-flow.test.ts`
 
-- [ ] **Step 1: Write failing validating and repairing transition tests**
+- [x] **Step 1: Write failing validating and repairing transition tests**
 
 Add `synthesis.validating` and `synthesis.repairing` to `ResearchAction` and first write the test:
 
@@ -351,7 +353,7 @@ it("keeps the workflow synthesizing while a report is repaired", () => {
 });
 ```
 
-- [ ] **Step 2: Write failing Agent event-order tests**
+- [x] **Step 2: Write failing Agent event-order tests**
 
 Update the test `model()` helper so `generateReport` invokes `onPartialReport` and optionally `onRepairing`. Add these assertions:
 
@@ -375,7 +377,7 @@ expect(reportEvents.filter((event) => event.type === "report.delta").map((event)
 
 Add a repair test expecting `report.validating` and then `report.repairing` between the last delta and the terminal report, plus a cancellation test proving no delta is emitted after `research.cancelled`.
 
-- [ ] **Step 3: Run state and Agent tests to verify RED**
+- [x] **Step 3: Run state and Agent tests to verify RED**
 
 Run:
 
@@ -385,7 +387,7 @@ npm test -- lib/agent/research-state.test.ts lib/agent/research-agent.test.ts
 
 Expected: FAIL because validating/repairing transitions and partial callbacks are not wired.
 
-- [ ] **Step 4: Implement Agent delta emission**
+- [x] **Step 4: Implement Agent delta emission**
 
 During the existing synthesis stage:
 
@@ -401,7 +403,7 @@ During the existing synthesis stage:
 
 Await every callback so the existing route backpressure and event timeout apply to report updates. Add a Chinese comment explaining that delivery acknowledgement must precede sequence increment; otherwise a rejected emit would create a gap the client correctly treats as a protocol error.
 
-- [ ] **Step 5: Add route integration coverage**
+- [x] **Step 5: Add route integration coverage**
 
 Extend `app/api/research/route.test.ts` and `app/api/research/research-flow.test.ts` to assert:
 
@@ -411,7 +413,7 @@ Extend `app/api/research/route.test.ts` and `app/api/research/research-flow.test
 - a complete real workflow contains one `report.started`, at least one `report.delta`, and exactly one completed/partial terminal report;
 - `report.delta` is not added to `terminalEventTypes`.
 
-- [ ] **Step 6: Run the server-side suite**
+- [x] **Step 6: Run the server-side suite**
 
 Run:
 
@@ -424,7 +426,7 @@ git diff --check
 
 Expected: all commands exit 0; event order and route backpressure are explicit.
 
-- [ ] **Step 7: Commit the workflow slice**
+- [x] **Step 7: Commit the workflow slice**
 
 ```bash
 git add lib/agent/research-state.ts lib/agent/research-state.test.ts lib/agent/research-agent.ts lib/agent/research-agent.test.ts app/api/research/route.test.ts app/api/research/research-flow.test.ts
@@ -437,7 +439,7 @@ git commit -m "feat: emit streaming report workflow events"
 - Modify: `components/research/use-research-stream.ts`
 - Modify: `components/research/use-research-stream.test.tsx`
 
-- [ ] **Step 1: Write failing transient-draft reducer tests**
+- [x] **Step 1: Write failing transient-draft reducer tests**
 
 Use fake timers and a real NDJSON `ReadableStream`. Add tests for:
 
@@ -462,7 +464,7 @@ it("batches rapid append updates into one visible 40ms draft update", async () =
 
 Also add tests for replace, repeated/skipped/out-of-order sequence, terminal flush, failed/cancelled retention, validating/repairing status, completed cleanup, retry/reset cleanup, late old-generation updates and unmount timer cleanup.
 
-- [ ] **Step 2: Run hook tests to verify RED**
+- [x] **Step 2: Run hook tests to verify RED**
 
 Run:
 
@@ -472,7 +474,7 @@ npm test -- components/research/use-research-stream.test.tsx
 
 Expected: FAIL because `ResearchRun` has no `reportDraft` and all events currently enter `run.events`.
 
-- [ ] **Step 3: Add transient draft types and accumulator refs**
+- [x] **Step 3: Add transient draft types and accumulator refs**
 
 Define:
 
@@ -488,7 +490,7 @@ Add `reportDraft?: ReportDraftState` and `hadReportDraft: boolean` to internal r
 
 Keep a generation-bound accumulator ref containing `markdown` and `nextSequence`, plus one timer ref. Validate and apply every delta immediately in the ref, but dispatch at most one visible draft update every 40 ms.
 
-- [ ] **Step 4: Implement protocol and lifecycle rules**
+- [x] **Step 4: Implement protocol and lifecycle rules**
 
 In `processRecord`:
 
@@ -509,7 +511,7 @@ For normal events:
 
 Add Chinese comments at sequence validation, terminal flush and delta-log omission. The comments must explain ordering and ownership, not restate the code.
 
-- [ ] **Step 5: Run hook tests and checks**
+- [x] **Step 5: Run hook tests and checks**
 
 Run:
 
@@ -522,7 +524,7 @@ git diff --check
 
 Expected: all commands exit 0 under real and fake timer tests.
 
-- [ ] **Step 6: Commit the client stream slice**
+- [x] **Step 6: Commit the client stream slice**
 
 ```bash
 git add components/research/use-research-stream.ts components/research/use-research-stream.test.tsx
@@ -539,7 +541,7 @@ git commit -m "feat: buffer streaming report drafts"
 - Modify: `app/globals.css`
 - Modify: `app/workspace-layout.test.ts`
 
-- [ ] **Step 1: Write a failing renderer test before installing the package**
+- [x] **Step 1: Write a failing renderer test before installing the package**
 
 Create `components/research/streaming-report-draft.test.tsx`. Mock the `streamdown` module with a component that exposes received mode, animation and Markdown. Test:
 
@@ -561,7 +563,7 @@ it("renders a growing Markdown draft without creating a scroll viewport", () => 
 
 Add tests proving repairing stops animation, incomplete shows an explicit warning, link rendering returns inert text, and image rendering returns `null`.
 
-- [ ] **Step 2: Run the renderer test to verify RED**
+- [x] **Step 2: Run the renderer test to verify RED**
 
 Run:
 
@@ -571,7 +573,7 @@ npm test -- components/research/streaming-report-draft.test.tsx
 
 Expected: FAIL because the component and `streamdown` dependency do not exist.
 
-- [ ] **Step 3: Install only standalone Streamdown**
+- [x] **Step 3: Install only standalone Streamdown**
 
 Run:
 
@@ -581,7 +583,7 @@ npm install streamdown
 
 Expected: `package.json` and `package-lock.json` add `streamdown`; no `@assistant-ui/*` package appears.
 
-- [ ] **Step 4: Implement the renderer**
+- [x] **Step 4: Implement the renderer**
 
 Create `StreamingReportDraft` with these fixed boundaries:
 
@@ -603,13 +605,13 @@ Create `StreamingReportDraft` with these fixed boundaries:
 
 Use visible status text for streaming, validating, repairing and incomplete. Do not add a scroll wrapper, source click handler, raw HTML plugin, image plugin, Mermaid plugin or assistant-ui provider. Add a Chinese comment explaining why the draft body is intentionally not live-announced.
 
-- [ ] **Step 5: Add bounded CSS contracts**
+- [x] **Step 5: Add bounded CSS contracts**
 
 Add draft typography and status styles without `height`, `max-height`, `overflow-y: auto` or `overflow: scroll`. Extend reduced-motion rules so Streamdown caret/transition animation is disabled while text updates remain visible.
 
 Extend `app/workspace-layout.test.ts` to assert the draft has visible overflow and the reduced-motion block disables its caret animation.
 
-- [ ] **Step 6: Run renderer, CSS and package checks**
+- [x] **Step 6: Run renderer, CSS and package checks**
 
 Run:
 
@@ -618,13 +620,13 @@ npm test -- components/research/streaming-report-draft.test.tsx app/workspace-la
 npm run typecheck
 npm run lint -- components/research/streaming-report-draft.tsx components/research/streaming-report-draft.test.tsx app/workspace-layout.test.ts
 npm ls streamdown
-rg -n '@assistant-ui/' package.json package-lock.json
+rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json
 git diff --check
 ```
 
-Expected: tests, static checks, `npm ls streamdown` and `git diff --check` exit 0. The `rg` command exits 1 with no matches, proving assistant-ui packages are absent.
+Expected: tests, static checks, `npm ls streamdown` and `git diff --check` exit 0. The scoped, case-insensitive `rg` command exits 1 with no matches, proving the checked runtime surfaces and dependency manifests contain no assistant-ui integration.
 
-- [ ] **Step 7: Commit the renderer slice**
+- [x] **Step 7: Commit the renderer slice**
 
 ```bash
 git add package.json package-lock.json components/research/streaming-report-draft.tsx components/research/streaming-report-draft.test.tsx app/globals.css app/workspace-layout.test.ts
@@ -642,7 +644,7 @@ git commit -m "feat: render streaming report drafts"
 - Modify: `components/research/research-workbench.test.tsx`
 - Modify: `app/globals.css`
 
-- [ ] **Step 1: Write failing Printer projection tests**
+- [x] **Step 1: Write failing Printer projection tests**
 
 Add tests proving `report.delta` creates no Printer record and validating/repairing update the current synthesis record:
 
@@ -660,7 +662,7 @@ expect(derivePrinterRecords([
 }]);
 ```
 
-- [ ] **Step 2: Write failing formal-report animation tests**
+- [x] **Step 2: Write failing formal-report animation tests**
 
 Add an `animate` prop defaulting to true in the expected API and test:
 
@@ -682,7 +684,7 @@ Define `report` and `source` in the new test file with the same complete `Resear
 
 CSS animation selectors must require `[data-animate="true"]` so a streamed draft is not followed by a second fake reveal.
 
-- [ ] **Step 3: Write failing Workbench behavior tests**
+- [x] **Step 3: Write failing Workbench behavior tests**
 
 Extend the hook mock with `reportDraft` and `hadReportDraft`. Add tests for:
 
@@ -697,7 +699,7 @@ Extend the hook mock with `reportDraft` and `hadReportDraft`. Add tests for:
 - a completed report with no prior delta uses `animate={true}` as fallback;
 - retry/new research resets draft-facing UI.
 
-- [ ] **Step 4: Run focused UI tests to verify RED**
+- [x] **Step 4: Run focused UI tests to verify RED**
 
 Run:
 
@@ -707,13 +709,13 @@ npm test -- components/research/research-printer-model.test.ts components/resear
 
 Expected: FAIL because synthesis has no repairing status and Workbench has no draft surface.
 
-- [ ] **Step 5: Implement projection and formal report marker**
+- [x] **Step 5: Implement projection and formal report marker**
 
 Extend synthesis status to `running | validating | repairing | complete`. Ignore `report.delta` in `derivePrinterRecords`; update the latest active synthesis record on `report.validating` and `report.repairing`.
 
 Add `animate?: boolean` to `ResearchReportView`, render `data-animate={animate}`, and scope the existing `report-feed` selectors to `[data-animate="true"]`.
 
-- [ ] **Step 6: Implement Workbench report-surface ownership**
+- [x] **Step 6: Implement Workbench report-surface ownership**
 
 Define the report surface as an existing `run.reportDraft` or a validated completed/partial report. Render in this order:
 
@@ -728,7 +730,7 @@ Use `run.hadReportDraft` to set formal report animation. Change only the follow 
 
 Add Chinese comments explaining the new top-position timing and why final replacement preserves the reader position.
 
-- [ ] **Step 7: Run UI and scroll regression tests**
+- [x] **Step 7: Run UI and scroll regression tests**
 
 Run:
 
@@ -741,7 +743,7 @@ git diff --check
 
 Expected: all commands exit 0; no nested vertical scroll contract changes.
 
-- [ ] **Step 8: Commit the integration slice**
+- [x] **Step 8: Commit the integration slice**
 
 ```bash
 git add components/research/research-printer-model.ts components/research/research-printer-model.test.ts components/research/research-report.tsx components/research/research-report.test.tsx components/research/research-workbench.tsx components/research/research-workbench.test.tsx app/globals.css
@@ -751,11 +753,13 @@ git commit -m "feat: integrate streamed reports into workspace"
 ## Task 7: Document, verify and browser-QA the complete stream
 
 **Files:**
+- Modify: `README.md`
 - Modify: `docs/architecture.md`
+- Modify: `docs/superpowers/specs/2026-07-16-streaming-research-report-design.md`
 - Modify: `docs/superpowers/plans/2026-07-16-streaming-research-report.md`
 - Verify: all files from Tasks 1–6
 
-- [ ] **Step 1: Update architecture documentation**
+- [x] **Step 1: Update architecture documentation**
 
 Add a “真实报告流” section to `docs/architecture.md` containing:
 
@@ -766,7 +770,7 @@ Add a “真实报告流” section to `docs/architecture.md` containing:
 - why Streamdown is standalone and assistant-ui is not installed;
 - the learning order: event schema → provider stream → draft projector → Agent callbacks → NDJSON route → Hook batching → Streamdown → Workbench scroll → formal citation view.
 
-- [ ] **Step 2: Run the complete automated verification**
+- [x] **Step 2: Run the complete automated verification**
 
 Run:
 
@@ -781,7 +785,7 @@ git status --short
 
 Expected: all tests pass; lint, TypeScript, production build and diff check exit 0; status contains only the intended documentation update before its commit. If sandboxed Turbopack reports `binding to a port: Operation not permitted`, rerun only `npm run build` with the required sandbox approval and record both outcomes.
 
-- [ ] **Step 3: Start one current-source development server**
+- [x] **Step 3: Start one current-source development server**
 
 Use a port not occupied by the original checkout or another worktree:
 
@@ -791,7 +795,7 @@ npm run dev -- --port 3002
 
 Expected: Next.js reports Ready for the implementation worktree. Confirm the browser URL points to that worktree server before collecting evidence.
 
-- [ ] **Step 4: Verify real provider streaming on desktop**
+- [x] **Step 4: Verify real provider streaming on desktop**
 
 At 1440 × 900, run a research question that produces a long report and capture these facts with browser measurements:
 
@@ -805,7 +809,7 @@ At 1440 × 900, run a research question that produces a long report and capture 
 - formal report replacement does not jump to top and does not replay `report-feed`;
 - formal citations still open the source drawer.
 
-- [ ] **Step 5: Verify incomplete, retry, reduced-motion and mobile behavior**
+- [x] **Step 5: Verify incomplete, retry, reduced-motion and mobile behavior**
 
 Use Stop research during report streaming and confirm the draft remains with an incomplete label and one cancelled terminal record. Retry and confirm the old Markdown disappears before the new generation starts.
 
@@ -813,7 +817,9 @@ Emulate `prefers-reduced-motion: reduce` and confirm caret/entry animations stop
 
 If a provider run does not reach synthesis, record the provider failure explicitly and use deterministic browser fixtures only for the missing UI state; do not describe fixture evidence as a live provider observation.
 
-- [ ] **Step 6: Record QA evidence and commit documentation**
+Reduced-motion browser emulation is considered complete only when the selected Browser backend advertises a real media-emulation capability. If it exposes only viewport override, record the limitation and use the focused CSS / renderer / Workbench tests as the explicit automated substitute; do not mutate page state to simulate the media query.
+
+- [x] **Step 6: Record QA evidence and commit documentation**
 
 Append exact browser dimensions, scrollTop/scrollHeight/clientHeight values, draft sequence changes, completion state, console findings and any provider caveat to the verification section of this plan.
 
@@ -821,11 +827,11 @@ Run:
 
 ```bash
 git diff --check
-git add docs/architecture.md docs/superpowers/plans/2026-07-16-streaming-research-report.md
-git commit -m "docs: explain streaming report pipeline"
+git add README.md docs/architecture.md docs/superpowers/specs/2026-07-16-streaming-research-report-design.md docs/superpowers/plans/2026-07-16-streaming-research-report.md
+git commit -m "docs: document streaming provider strategies"
 ```
 
-- [ ] **Step 7: Review the complete commit range**
+- [x] **Step 7: Review the complete commit range**
 
 Run:
 
@@ -837,6 +843,98 @@ git status --short --branch
 Expected: protocol, provider, workflow, client buffering, renderer, workspace integration and documentation are separate explainable commits; the worktree is clean.
 
 Dispatch a fresh final reviewer over the design-doc commit exclusive through current HEAD. The reviewer must inspect every code and documentation commit, rerun full tests/lint/typecheck/build/diff-check, and return Critical/Important/Minor findings plus an explicit Ready verdict before branch completion.
+
+## Task 7 verification evidence (2026-07-16, Asia/Shanghai)
+
+The following evidence through the end of “Responsive owner, accessibility and console evidence” was captured before the provider-capability correction and committed in `f8f2119`. It is intentionally retained as **pre-fix / Not Ready historical evidence**, not as the current release verdict. The later post-fix section is authoritative for the current `aa3b2d8` implementation.
+
+### Pre-fix automated verification
+
+- `git diff --check`: exit 0 before browser QA.
+- `npm test`: exit 0, 22 test files and 394 tests passed.
+- `npm run lint`: exit 0.
+- `npm run typecheck`: exit 0.
+- `npm run build`: the sandboxed first run failed only with Turbopack `creating new process - binding to a port - Operation not permitted (os error 1)`; the approved unsandboxed rerun exited 0, compiled successfully and generated `/`, `/_not-found` and `/api/research`.
+- `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
+- `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json`: no output and expected exit 1.
+- Pre-commit `git status --short`: only `docs/architecture.md` and this plan are intended documentation changes.
+
+### Pre-fix server and browser boundary
+
+- Port 3002 was free before start. The current worktree server started with the existing main-checkout `.env.local` loaded in-process, without printing or copying secrets, and was bound only to `127.0.0.1:3002`.
+- Browser URL was explicitly verified as `http://localhost:3002/`, not an older checkout or port. QA used the Browser plugin's `browser-client` with its `tab.playwright` surface.
+- Exact desktop viewport: 1440 × 900. Exact narrow viewport: 900 × 800. The temporary viewport override was reset after QA.
+
+### Pre-fix live provider evidence
+
+- Four Kimi + Tavily attempts reached real synthesis. They produced actual DOM text changes while the run remained `running`, rather than revealing one complete DOM with CSS: observed draft lengths included `0 → 176 → 1495` on the first run, `0 → 736 → 966 → 1917` on its retry, `0 → 87` on the cancellation run, and `0 → 95 → 1067` on the final bounded completion attempt. `sequence` is intentionally absent from the DOM contract, so Browser could not read a numeric sequence without prohibited page-state injection; deterministic route coverage observed sequences `[0, 1]`, while these increasing live Markdown lengths are the browser evidence for real deltas.
+- A live following sample at length 176 measured desktop `.workspace-content` as `scrollTop=112`, `scrollHeight=760`, `clientHeight=647`, `bottomDistance=1`; at length 1495 it measured `609 / 1256 / 647 / 0`. Retry samples measured `261 / 908 / 647 / 0` at length 736 and `452 / 1100 / 647 / 1` at length 966. All are within the 48 px following threshold.
+- Computed desktop ownership during a live draft: `.workspace-content { overflow-y: auto }`; `.streaming-report-draft { overflow-y: visible }`. No draft table appeared in these live provider outputs, so the table's horizontal-only overflow remains test evidence rather than a computed browser observation.
+- `report.validating` and `report.repairing` both occurred in the live retry; the visible status changed from `正在生成报告草稿` to `正在修复报告草稿` while preserving 1917 characters. They are recorded because they actually occurred, not inferred from static code.
+- Desktop PageUp exposed “Back to latest report”; after resume, metrics were `scrollTop=1032`, `scrollHeight=1680`, `clientHeight=647`, `bottomDistance=1` and the button disappeared. The PageUp key itself continued native scrolling during the next measurement (`481` to `404.5`), and the provider entered repair before another delta, so “later delta leaves an already-settled paused scrollTop unchanged” was not claimed from this live run; focused Workbench tests cover that contract.
+- Stop was clicked during a live synthesis draft. The terminal UI preserved 87 characters, changed the label to `报告草稿未完成，最终报告尚不可用`, reported `Research cancelled`, and contained exactly one cancelled Printer record. Retry immediately cleared the old Markdown (`draftLength=0`, old heading absent) before the new generation began.
+- Live completion caveat: every bounded completion attempt reached synthesis and streamed a draft, but none produced a validated formal report. Outcomes were the public errors `A research dependency failed.` or `A research operation timed out.`; incomplete drafts of 1858 and 1067 characters remained readable. Server output also warned that Kimi `kimi-k2.6` does not support the requested `responseFormat` feature. Therefore formal replacement, `data-animate="false"`, and citation-drawer opening are **not** described as live observations.
+
+### Pre-fix responsive owner, accessibility and console evidence
+
+- On 900 × 800 after a followed desktop-to-document migration, document metrics were `scrollTop=1393`, `scrollHeight=2193`, `clientHeight=800`, `bottomDistance=0`; `.workspace-content` measured `scrollTop=0`, `scrollHeight=1526`, `clientHeight=1526`, `overflow-y: visible`. `.workspace-shell` and the draft also computed to visible vertical overflow, so document/window was the only persistent vertical owner.
+- Mobile PageUp produced document metrics `196 / 2193 / 800 / 1197`, showed a `position: fixed` “Back to latest report” button, and left workspace `scrollTop=0`. Clicking the button restored document `1393 / 2193 / 800 / 0`. Resizing back across 960 px restored desktop workspace ownership at `1107 / 1682 / 575 / 0`, with document `0 / 900 / 900`.
+- The available Browser runtime exposes viewport override but no reduced-motion emulation capability. Reduced-motion caret/entry suppression with continued text updates is therefore covered by `app/workspace-layout.test.ts` and renderer/Workbench tests, not claimed as a browser observation.
+- Browser console contained one hydration mismatch from the user's Chrome extension injecting `trancy-version="7.8.9"` on `<html>`; the diff identifies the external attribute, not application markup. No other browser warning/error was captured. Server logs contained the Kimi `responseFormat` compatibility warning noted above.
+- No deterministic browser fixture was injected: the production page has no fixture entry point, and the required Browser surface exposes read-only page evaluation. Mutating `fetch` or React state from page code would violate the Browser contract. Automated deterministic route, Hook, Workbench, report and citation tests supply the missing completion/citation/reduced-motion evidence; this limitation is kept explicit rather than presenting test evidence as live QA.
+- Browser tabs were finalized, the viewport override was reset, the development server was stopped, and `lsof -nP -iTCP:3002 -sTCP:LISTEN` returned no listener (exit 1).
+
+### Post-capability-fix revalidation (current)
+
+#### Automated verification
+
+- Start HEAD was `aa3b2d8` with a clean worktree.
+- `npm test`: exit 0, 23 test files and **404 tests passed**.
+- `npm run lint`: exit 0.
+- `npm run typecheck`: exit 0.
+- `npm run build`: the sandboxed run reproduced only Turbopack `creating new process - binding to a port - Operation not permitted (os error 1)`; the approved unsandboxed rerun exited 0, compiled successfully, ran TypeScript, and generated `/`, `/_not-found`, and `/api/research`.
+- `git diff --check`: exit 0 before documentation edits.
+- `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
+- Corrected dependency verification: `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json` produced no output and expected exit 1. The earlier broad historical pattern included ordinary `Assistant` role text, so it could match unrelated application copy and must not be cited as a no-output check. The scoped result confirms the report surface remains the custom Workbench plus standalone Streamdown.
+- Wire-level structured-output tests are included in the 404-test suite: native capability sends `json_schema`, prompted capability sends `json_object`, Kimi / DeepSeek capabilities propagate through selection, invalid prompted partials are skipped, and the final object is checked by full `reportSchema`.
+
+#### Server and Browser boundary
+
+- The current worktree server loaded `../../.env.local` in-process without printing or copying secrets, bound only to `127.0.0.1:3002`, and reported Ready. Browser URL was explicitly verified as `http://127.0.0.1:3002/`.
+- Browser QA used the installed `control-in-app-browser` skill (`browser-client` plus the selected Browser backend), not standalone Playwright. Exact desktop viewport was 1440 × 900; narrow spot-check viewport was 900 × 800.
+- The selected Browser advertised only the `viewport` capability and no media / reduced-motion emulation. `prefers-reduced-motion` behavior is therefore an explicit automated substitute through `app/workspace-layout.test.ts`, renderer tests, and Workbench tests; no page-state injection was used.
+
+#### Successful Kimi + Tavily live completion
+
+- One bounded Kimi + Tavily run progressed through plan, search, evaluation, synthesis, real draft streaming, validation, and `report.completed`. It used 6 sources (5 accepted, 1 rejected), 1/2 search rounds, and 6/12 agent operations.
+- While status remained running, observed draft text lengths were **4744 → 4958 → 5079** characters; a later paused sample reached **5502**. Earlier synthesis observations also showed the title, then Executive summary, then Key findings appearing over time. These were real DOM content changes, not a completed document revealed by CSS.
+- Desktop follow samples were `scrollTop / scrollHeight / clientHeight / bottomDistance`: `1930 / 2578 / 647 / 1`, `2028.5 / 2676 / 647 / 0.5`, and `2137.5 / 2785 / 647 / 0.5`. `.workspace-content` was the vertical owner while `.streaming-report-draft` remained in normal document flow.
+- Scrolling upward produced `1728 / 2867 / 647 / 492` and displayed “Back to latest report”. During later delta growth the draft increased to 5502 and scroll height to 2950 while **scrollTop remained 1728**, proving paused reading did not follow. Clicking the button restored `4538 / 5186 / 647 / 1`.
+- The run emitted validation on the successful path; repairing did not occur and is not claimed as a live observation for this run. Automated tests cover the repair-only branch.
+- Formal replacement succeeded with status `Research completed. Latest event: Report completed.`, `data-animate="false"`, and a 6169-character formal article. `scrollTop` was **4538 immediately before and after replacement**, so the draft-to-formal swap did not jump or replay.
+- Formal title: **“AI Coding Assistant Capabilities and Adoption: 2024-2025 Evolution”**. Its Executive summary begins: “Over the past year, AI coding assistants evolved from autocomplete and chat tools to agentic systems capable of multi-step reasoning, autonomous task execution, and cross-platform orchestration.”
+- Clicking citation button **[1]** opened `SourceDrawer` / dialog with source number `[1]` and title **“GitHub Universe · Recap · GitHub”**. The dialog showed the accepted evidence detail and the safe original `github.com` link.
+- Unlike the pre-fix runs, server logs contained **no Kimi `responseFormat` unsupported warning**. The completed research POST returned 200 in approximately 2.5 minutes.
+
+#### Responsive, stop/retry, and log spot checks
+
+- At 900 × 800, document root was the only persistent vertical owner: `documentElement 0 / 5709 / 800`, while `.workspace-content` measured `0 / 5115 / 5115` with `overflow-y: visible` and `.progress-panel` was also non-scrolling. The mobile “Back to latest report” button moved document root to `4909 / 5709 / 800 / 0`.
+- A light Retry → Stop recheck found exactly one “Stop research” control during the restarted run; Stop returned `Research cancelled. Latest event: Research cancelled.` and restored Retry / New research controls. The earlier pre-fix synthesis-draft preservation evidence remains applicable because the compatibility commits did not change Workbench cancellation logic; automated tests continue to cover retained incomplete text and generation isolation.
+- Browser console contained one hydration mismatch whose diff showed the external Chrome extension attribute `trancy-version="7.8.9"` on `<html>`. No other browser warning/error was captured. Server output repeated that extension-originated hydration message but contained no application/provider compatibility warning.
+- Browser tabs were finalized and the viewport override was reset. The development server was stopped after QA.
+
+### Final full-range review (authoritative release verdict)
+
+- A fresh reviewer inspected the complete implementation range `9b1ec04..a49ea69`, covering the protocol, provider strategies, workflow integration, client buffering, Streamdown renderer, scroll ownership, documentation, and the review-driven fixes.
+- Final verdict: **Ready — Yes**. Remaining findings: **Critical 0 / Important 0 / Minor 0**.
+- `npm test`: exit 0, 23 test files and **410 tests passed**.
+- `npm run lint`: exit 0.
+- `npm run typecheck`: exit 0.
+- `npm run build`: the sandboxed run hit only Turbopack's environment restriction (`binding to a port: Operation not permitted`); the approved rerun outside that restriction exited 0 and generated `/`, `/_not-found`, and `/api/research`.
+- `git diff --check`: exit 0.
+- `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
+- `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json`: no output and expected exit 1, confirming no assistant-ui dependency was introduced.
+- Review fixes preserve the first terminal outcome against late transport errors, expose busy state through validation/repair phases, correct the dependency-verification documentation, and align the terminal-failure comment with the implemented behavior (`c2762da`, `bce26ec`, `a49ea69`).
 
 ## Plan self-review checklist
 

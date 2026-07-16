@@ -9,6 +9,7 @@ import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
 import { deriveResearchViewModel } from "./research-view-model";
 import { ResearchWorkbench } from "./research-workbench";
+import type { ReportDraftState } from "./use-research-stream";
 
 const source: Source = {
   id: "source-1",
@@ -86,6 +87,8 @@ const retry = vi.fn();
 let mockedRun: {
   status: "idle" | "running" | "completed" | "partial" | "cancelled" | "failed";
   events: ResearchEvent[];
+  reportDraft?: ReportDraftState;
+  hadReportDraft?: boolean;
   error?: string;
 };
 
@@ -98,6 +101,74 @@ function defineWorkspaceScroll(viewport: HTMLElement, scrollTop = 690) {
     scrollTo: { configurable: true, value: scrollTo },
   });
   return scrollTo;
+}
+
+function defineMobileDocumentScroll(scrollTop = 700) {
+  vi.stubGlobal("innerWidth", 900);
+  vi.stubGlobal("matchMedia", vi.fn(() => ({
+    matches: true,
+    media: "(max-width: 960px)",
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })));
+  const scrollingElement = document.documentElement;
+  Object.defineProperties(scrollingElement, {
+    scrollHeight: { configurable: true, value: 1200 },
+    clientHeight: { configurable: true, value: 400 },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+  Object.defineProperty(document, "scrollingElement", {
+    configurable: true,
+    value: scrollingElement,
+  });
+  const scrollTo = vi.fn();
+  vi.stubGlobal("scrollTo", scrollTo);
+  return { scrollingElement, scrollTo };
+}
+
+function defineMutableMediaQuery(initialMatches: boolean) {
+  let changeHandler: ((event: MediaQueryListEvent) => void) | undefined;
+  const mediaQuery = {
+    matches: initialMatches,
+    media: "(max-width: 960px)",
+    onchange: null,
+    addEventListener: vi.fn((type: string, handler: (event: MediaQueryListEvent) => void) => {
+      if (type === "change") changeHandler = handler;
+    }),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  };
+  vi.stubGlobal("matchMedia", vi.fn(() => mediaQuery));
+  return {
+    mediaQuery,
+    change(matches: boolean) {
+      mediaQuery.matches = matches;
+      act(() => changeHandler?.({ matches } as MediaQueryListEvent));
+    },
+    getChangeHandler: () => changeHandler,
+  };
+}
+
+function defineDocumentScrollMetrics(scrollTop = 700) {
+  const scrollingElement = document.documentElement;
+  Object.defineProperties(scrollingElement, {
+    scrollHeight: { configurable: true, value: 1200 },
+    clientHeight: { configurable: true, value: 400 },
+    scrollTop: { configurable: true, writable: true, value: scrollTop },
+  });
+  Object.defineProperty(document, "scrollingElement", {
+    configurable: true,
+    value: scrollingElement,
+  });
+  const scrollTo = vi.fn();
+  vi.stubGlobal("scrollTo", scrollTo);
+  return { scrollingElement, scrollTo };
 }
 
 vi.mock("./use-research-stream", () => ({
@@ -115,6 +186,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("ResearchForm", () => {
@@ -509,22 +581,411 @@ describe("ResearchWorkbench", () => {
     expect(disconnect).toHaveBeenCalledOnce();
   });
 
-  it("positions a newly completed report at the workspace top", () => {
-    mockedRun = { status: "running", events: completedEvents.slice(0, -1) };
+  it("promotes the draft to primary content and moves the Printer into a closed archive", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const printer = screen.getByText("How the research unfolded").closest(".printer-shell");
+    expect(printer?.closest("details")).toBeNull();
+
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
+    rerender(<ResearchWorkbench />);
+
+    expect(screen.getByText("正在生成报告草稿").closest(".streaming-report-draft")).toBeInTheDocument();
+    const archive = screen.getByText(/view research process/i).closest("details");
+    expect(archive).not.toHaveAttribute("open");
+    expect(archive).toContainElement(screen.getByText("How the research unfolded"));
+  });
+
+  it("positions the report surface at the top once, then follows draft growth at the bottom", () => {
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
     const { rerender } = render(<ResearchWorkbench />);
     const viewport = screen.getByRole("region", { name: /research workspace content/i });
     const scrollTo = defineWorkspaceScroll(viewport);
     scrollTo.mockClear();
 
-    mockedRun = { status: "completed", events: completedEvents };
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
     rerender(<ResearchWorkbench />);
     expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
     scrollTo.mockClear();
 
-    viewport.scrollTop = 100;
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" },
+      ],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    rerender(<ResearchWorkbench />);
+    expect(scrollTo).not.toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("pauses draft following while reading and resumes at the latest report", () => {
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 200);
     fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+    scrollTo.mockClear();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [
+        ...mockedRun.events,
+        { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" },
+      ],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
     expect(scrollTo).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: /back to latest progress/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest report/i }));
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+    expect(screen.queryByRole("button", { name: /back to latest report/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps one draft visible through validation and repair while updating the archived synthesis", () => {
+    mockedRun = {
+      status: "running",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Draft" },
+        { type: "report.validating" },
+      ],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "validating" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    expect(screen.getAllByRole("heading", { name: "Draft" })).toHaveLength(1);
+    expect(screen.getByText("Synthesis · validating")).toBeInTheDocument();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.repairing" }],
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "repairing" },
+    };
+    rerender(<ResearchWorkbench />);
+    expect(screen.getAllByRole("heading", { name: "Draft" })).toHaveLength(1);
+    expect(screen.getByText("Synthesis · repairing")).toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      status: "cancelled" as const,
+      event: { type: "research.cancelled" } as ResearchEvent,
+      outcome: /research · cancelled/i,
+    },
+    {
+      status: "failed" as const,
+      event: { type: "research.failed", message: "Safe failure", recoverable: true } as ResearchEvent,
+      outcome: /research · failed/i,
+    },
+  ])("retains an incomplete draft and one terminal archive card when $status", ({ status, event, outcome }) => {
+    mockedRun = {
+      status,
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "report.delta", sequence: 0, mode: "append", text: "# Incomplete" },
+        event,
+      ],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+      error: status === "failed" ? "Safe failure" : undefined,
+    };
+    render(<ResearchWorkbench />);
+
+    expect(screen.getByText(/报告草稿未完成/)).toBeVisible();
+    expect(screen.getAllByText(outcome)).toHaveLength(1);
+    expect(screen.getAllByText(/view research process/i)).toHaveLength(1);
+  });
+
+  it("replaces a streamed draft in place without moving the reader or replaying report animation", () => {
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const scrollTo = defineWorkspaceScroll(viewport, 200);
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: true };
+    rerender(<ResearchWorkbench />);
+
+    expect(screen.getByRole("heading", { name: report.title }).closest(".research-report")).toHaveAttribute("data-animate", "false");
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(200);
+  });
+
+  it("animates the formal report fallback when no report delta was received", () => {
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: false };
+    render(<ResearchWorkbench />);
+
+    expect(screen.getByRole("heading", { name: report.title }).closest(".research-report")).toHaveAttribute("data-animate", "true");
+  });
+
+  it("clears draft-facing UI when retrying or starting a new research", () => {
+    mockedRun = {
+      status: "failed",
+      events: [
+        ...completedEvents.slice(0, -1),
+        { type: "research.failed", message: "Safe failure", recoverable: true },
+      ],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+      error: "Safe failure",
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    fireEvent.click(screen.getByRole("button", { name: /retry research/i }));
+    expect(retry).toHaveBeenCalledOnce();
+
+    mockedRun = { status: "running", events: [], hadReportDraft: false };
+    rerender(<ResearchWorkbench />);
+    expect(screen.queryByText(/报告草稿未完成/)).not.toBeInTheDocument();
+    expect(screen.getByText("How the research unfolded").closest("details")).toBeNull();
+
+    mockedRun = {
+      status: "cancelled",
+      events: [{ type: "research.cancelled" }],
+      reportDraft: { markdown: "# Incomplete", sequence: 0, status: "incomplete" },
+      hadReportDraft: true,
+    };
+    rerender(<ResearchWorkbench />);
+    fireEvent.click(screen.getByRole("button", { name: /new research/i }));
+    expect(reset).toHaveBeenCalledOnce();
+
+    mockedRun = { status: "idle", events: [], hadReportDraft: false };
+    rerender(<ResearchWorkbench />);
+    expect(screen.getByRole("form", { name: /start research/i })).toBeInTheDocument();
+  });
+
+  it("uses the document scroll owner to position a newly started report on mobile", () => {
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(120);
+    mockedRun = { status: "running", events: completedEvents.slice(0, -2) };
+    const { rerender } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const workspaceScrollTo = defineWorkspaceScroll(viewport);
+    const documentWrapper = viewport.firstElementChild as HTMLElement;
+    vi.spyOn(documentWrapper, "getBoundingClientRect").mockReturnValue({
+      top: 250,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: 0,
+      height: 0,
+      x: 0,
+      y: 250,
+      toJSON: () => ({}),
+    });
+
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "", sequence: -1, status: "streaming" },
+      hadReportDraft: false,
+    };
+    rerender(<ResearchWorkbench />);
+
+    expect(windowScrollTo).toHaveBeenCalledWith({ top: 370, behavior: "auto" });
+    expect(workspaceScrollTo).not.toHaveBeenCalled();
+    expect(scrollingElement.scrollTop).toBe(120);
+  });
+
+  it("pauses mobile document following and resumes at the document bottom", () => {
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(200);
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+    windowScrollTo.mockClear();
+
+    fireEvent.scroll(window);
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" }],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
+    expect(windowScrollTo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest report/i }));
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: scrollingElement.scrollHeight,
+      behavior: "auto",
+    });
+    expect(screen.queryByRole("button", { name: /back to latest report/i })).not.toBeInTheDocument();
+  });
+
+  it("follows mobile draft resize at document bottom but preserves position on formal replacement", () => {
+    let notifyResize: ResizeObserverCallback = () => undefined;
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = callback;
+      }
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    const { scrollingElement, scrollTo: windowScrollTo } = defineMobileDocumentScroll(790);
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    const { rerender } = render(<ResearchWorkbench />);
+
+    mockedRun = {
+      ...mockedRun,
+      events: [...mockedRun.events, { type: "report.delta", sequence: 1, mode: "append", text: "\nMore" }],
+      reportDraft: { markdown: "# Draft\nMore", sequence: 1, status: "streaming" },
+    };
+    rerender(<ResearchWorkbench />);
+    windowScrollTo.mockClear();
+    Object.defineProperty(scrollingElement, "scrollHeight", { configurable: true, value: 1500 });
+    act(() => notifyResize([], {} as ResizeObserver));
+    expect(windowScrollTo).toHaveBeenCalledWith({ top: 1500, behavior: "auto" });
+
+    windowScrollTo.mockClear();
+    mockedRun = { status: "completed", events: completedEvents, hadReportDraft: true };
+    rerender(<ResearchWorkbench />);
+    expect(windowScrollTo).not.toHaveBeenCalled();
+  });
+
+  it("cleans up the mobile window scroll listener", () => {
+    defineMobileDocumentScroll();
+    const addEventListener = vi.spyOn(window, "addEventListener");
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+    mockedRun = { status: "running", events: [] };
+    const { unmount } = render(<ResearchWorkbench />);
+    const scrollListener = addEventListener.mock.calls.find(([type]) => type === "scroll")?.[1];
+
+    expect(scrollListener).toBeTypeOf("function");
+    unmount();
+    expect(removeEventListener).toHaveBeenCalledWith("scroll", scrollListener);
+  });
+
+  it("migrates a followed desktop workspace to the mobile document bottom", () => {
+    const media = defineMutableMediaQuery(false);
+    const { scrollingElement, scrollTo: windowScrollTo } = defineDocumentScrollMetrics();
+    mockedRun = { status: "running", events: [] };
+    render(<ResearchWorkbench />);
+
+    media.change(true);
+
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: scrollingElement.scrollHeight,
+      behavior: "auto",
+    });
+  });
+
+  it("migrates a followed mobile document to the desktop workspace bottom", () => {
+    const media = defineMutableMediaQuery(true);
+    defineDocumentScrollMetrics();
+    mockedRun = { status: "running", events: [] };
+    render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const workspaceScrollTo = defineWorkspaceScroll(viewport);
+
+    media.change(false);
+
+    expect(workspaceScrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+  });
+
+  it("preserves a paused intent across owner changes and resumes the current owner", () => {
+    const media = defineMutableMediaQuery(false);
+    const { scrollingElement, scrollTo: windowScrollTo } = defineDocumentScrollMetrics(200);
+    mockedRun = {
+      status: "running",
+      events: completedEvents.slice(0, -1),
+      reportDraft: { markdown: "# Draft", sequence: 0, status: "streaming" },
+      hadReportDraft: true,
+    };
+    render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const workspaceScrollTo = defineWorkspaceScroll(viewport, 200);
+    fireEvent.scroll(viewport);
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+    workspaceScrollTo.mockClear();
+    windowScrollTo.mockClear();
+
+    media.change(true);
+    media.change(false);
+    media.change(true);
+    expect(workspaceScrollTo).not.toHaveBeenCalled();
+    expect(windowScrollTo).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /back to latest report/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /back to latest report/i }));
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: scrollingElement.scrollHeight,
+      behavior: "auto",
+    });
+  });
+
+  it("removes the same media query change listener on unmount", () => {
+    const media = defineMutableMediaQuery(false);
+    mockedRun = { status: "running", events: [] };
+    const { unmount } = render(<ResearchWorkbench />);
+    const changeHandler = media.getChangeHandler();
+
+    expect(changeHandler).toBeTypeOf("function");
+    unmount();
+    expect(media.mediaQuery.removeEventListener).toHaveBeenCalledWith("change", changeHandler);
+  });
+
+  it("falls back to resize-driven ownership migration without matchMedia", () => {
+    vi.stubGlobal("matchMedia", undefined);
+    vi.stubGlobal("innerWidth", 1200);
+    const { scrollingElement, scrollTo: windowScrollTo } = defineDocumentScrollMetrics();
+    const removeEventListener = vi.spyOn(window, "removeEventListener");
+    mockedRun = { status: "running", events: [] };
+    const { unmount } = render(<ResearchWorkbench />);
+    const viewport = screen.getByRole("region", { name: /research workspace content/i });
+    const workspaceScrollTo = defineWorkspaceScroll(viewport);
+
+    vi.stubGlobal("innerWidth", 900);
+    fireEvent.resize(window);
+    expect(windowScrollTo).toHaveBeenCalledWith({
+      top: scrollingElement.scrollHeight,
+      behavior: "auto",
+    });
+
+    vi.stubGlobal("innerWidth", 1200);
+    fireEvent.resize(window);
+    expect(workspaceScrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "auto" });
+
+    const resizeListener = removeEventListener.mock.calls.find(([type]) => type === "resize");
+    expect(resizeListener).toBeUndefined();
+    unmount();
+    expect(removeEventListener.mock.calls.some(([type]) => type === "resize")).toBe(true);
   });
 });
 

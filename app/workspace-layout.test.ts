@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
 function ruleBody(selector: string, source = styles) {
-  const uncommentedSource = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  // `@source "../node_modules/streamdown/dist/*.js"` 含有字面量 `/*`；只剥离由空白起始的真实 CSS 注释。
+  const uncommentedSource = source.replace(/(^|\s)\/\*[\s\S]*?\*\//g, "$1");
   const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
   let match: RegExpExecArray | null;
 
@@ -32,9 +33,9 @@ describe("desktop research workspace layout", () => {
   it("uses an explicit paper-feed animation for newly printed records", () => {
     expect(ruleBody('.printer-record[data-latest="true"]')).toMatch(/animation:\s*printer-feed/);
     expect(styles).toMatch(/@keyframes\s+printer-feed/);
-    expect(ruleBody(".research-report > .eyebrow")).toMatch(/animation:\s*report-feed/);
-    expect(ruleBody(".research-report > h2")).toMatch(/animation:\s*report-feed/);
-    expect(ruleBody(".research-report > section")).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > .eyebrow')).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > h2')).toMatch(/animation:\s*report-feed/);
+    expect(ruleBody('.research-report[data-animate="true"] > section')).toMatch(/animation:\s*report-feed/);
     expect(styles).toMatch(/@keyframes\s+report-feed/);
   });
 
@@ -45,9 +46,9 @@ describe("desktop research workspace layout", () => {
 
     expect(ruleBody('.printer-record[data-latest="true"]', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
     expect(ruleBody('.printer-record[data-latest="true"] article::after', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > .eyebrow", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > h2", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
-    expect(ruleBody(".research-report > section", reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > .eyebrow', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > h2', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody('.research-report[data-animate="true"] > section', reducedMotionStyles)).toMatch(/animation:\s*none\s*!important;/);
   });
 
   it("leaves nested document regions vertically unbounded", () => {
@@ -61,6 +62,60 @@ describe("desktop research workspace layout", () => {
     expect(eventPre).toMatch(/overflow:\s*visible;/);
     expect(eventPre).not.toMatch(/overflow-x:\s*auto;/);
     expect(eventPre).not.toMatch(/overflow-y:\s*auto;/);
+  });
+
+  it("keeps the streaming draft in the existing workspace scroll flow", () => {
+    const draft = ruleBody(".streaming-report-draft");
+    const draftBody = ruleBody(".streaming-report-draft-body");
+    const draftTable = ruleBody(".streaming-report-draft-table");
+
+    expect(draft).toMatch(/overflow:\s*visible;/);
+    expect(draftBody).toMatch(/overflow:\s*visible;/);
+    expect(draft).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draftBody).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draft).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(draftBody).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(draftTable).toMatch(/overflow-x:\s*auto;/);
+    expect(draftTable).toMatch(/overflow-y:\s*clip;/);
+    expect(draftTable).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draftTable).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(ruleBody(".streaming-report-draft-table:focus-visible")).toMatch(
+      /outline:\s*3px\s+solid/,
+    );
+  });
+
+  it("uses document scrolling and a fixed latest button on mobile", () => {
+    const mobileStart = styles.indexOf("@media (max-width: 960px)");
+    const mobileEnd = styles.indexOf("@media (max-width: 640px)");
+    const mobileStyles = styles.slice(mobileStart, mobileEnd);
+
+    expect(ruleBody(".workspace-content", mobileStyles)).toMatch(/overflow:\s*visible;/);
+    expect(ruleBody(".latest-button", mobileStyles)).toMatch(/position:\s*fixed;/);
+    expect(ruleBody(".latest-button", mobileStyles)).toMatch(/z-index:\s*\d+;/);
+  });
+
+  it("fully disables streaming-draft motion when reduced motion is requested", () => {
+    const reducedMotionStart = styles.indexOf("@media (prefers-reduced-motion: reduce)");
+    const reducedMotionStyles = styles.slice(reducedMotionStart);
+
+    expect(
+      ruleBody(
+        ".streaming-report-draft-body > :last-child::after",
+        reducedMotionStyles,
+      ),
+    ).toMatch(/animation:\s*none\s*!important;/);
+    expect(
+      ruleBody(
+        ".streaming-report-draft-body [data-sd-animate]",
+        reducedMotionStyles,
+      ),
+    ).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody(".streaming-report-draft-body *", reducedMotionStyles)).toMatch(
+      /transition:\s*none\s*!important;/,
+    );
+    expect(ruleBody(".draft-status", reducedMotionStyles)).toMatch(
+      /transition:\s*none\s*!important;/,
+    );
   });
 
   it("ignores declarations inside CSS comments", () => {

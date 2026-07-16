@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { deriveResearchViewModel } from "../../../components/research/research-view-model";
 import {
   createResearchFlowFixture,
   researchFlowAcceptedSourceIds,
@@ -14,6 +15,7 @@ import {
   type ResearchEvent,
 } from "../../../lib/agent/research-events";
 import type { ResearchState } from "../../../lib/agent/research-state";
+import type { ResearchReport } from "../../../lib/agent/research-types";
 import { createResearchRoute } from "../../../lib/server/research-route";
 
 const terminalTypes = new Set<ResearchEvent["type"]>([
@@ -22,6 +24,19 @@ const terminalTypes = new Set<ResearchEvent["type"]>([
   "research.cancelled",
   "research.failed",
 ]);
+
+const cancellationReport: ResearchReport = {
+  title: "Cancelled report",
+  executiveSummary: "This late provider result must not become terminal output.",
+  findings: [{
+    claim: "Kimi exposes a structured tool protocol.",
+    sourceIds: [researchFlowAcceptedSourceIds[0]],
+    confidence: "high",
+  }],
+  trends: [],
+  disagreements: [],
+  limitations: [],
+};
 
 async function readRemainingEvents(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -48,6 +63,39 @@ async function readRemainingEvents(
 
 async function executeFixture(options: { deferPlan?: boolean } = {}) {
   const fixture = createResearchFlowFixture(options);
+  const generateReport = fixture.model.generateReport.bind(fixture.model);
+  fixture.model.generateReport = async (
+    question,
+    sources,
+    evaluations,
+    partial,
+    modelOptions,
+  ) => {
+    modelOptions?.onModelCall?.();
+    const reportOptions = modelOptions
+      ? { ...modelOptions, onModelCall: undefined }
+      : modelOptions;
+    await reportOptions?.onPartialReport?.({
+      title: "Kimi 与 DeepSeek Agent 工具调用开发对比",
+    });
+    await reportOptions?.onPartialReport?.({
+      title: "Kimi 与 DeepSeek Agent 工具调用开发对比",
+      executiveSummary: "两者都提供结构化工具调用。",
+      findings: [{
+        claim: "Kimi 与 DeepSeek 都提供官方工具调用协议。",
+        sourceIds: [...researchFlowAcceptedSourceIds],
+        confidence: "high",
+      }],
+    });
+    await reportOptions?.onValidating?.();
+    return generateReport(
+      question,
+      sources,
+      evaluations,
+      partial,
+      reportOptions,
+    );
+  };
   let terminalState: ResearchState | undefined;
   const post = createResearchRoute({
     createModel: () => fixture.model,
@@ -110,8 +158,27 @@ describe("POST /api/research complete workflow", () => {
     expect(eventTypes.filter((type) => type === "search.completed")).toHaveLength(2);
     expect(eventTypes).toContain("gap.detected");
     expect(eventTypes.filter((type) => type === "conclusion.updated")).toHaveLength(2);
+    expect(eventTypes.filter((type) => type === "report.started")).toHaveLength(1);
+    expect(eventTypes.filter((type) => type === "report.delta").length).toBeGreaterThanOrEqual(1);
+    expect(eventTypes.filter((type) => type === "report.validating")).toHaveLength(1);
     expect(terminalEvents).toHaveLength(1);
     expect(completed?.type).toBe("report.completed");
+    const reportDeltas = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "report.delta" }> =>
+        event.type === "report.delta",
+    );
+    expect(reportDeltas.map((event) => event.sequence)).toEqual([0, 1]);
+    const completedView = deriveResearchViewModel(events);
+    const acceptedCitationNumbers = researchFlowAcceptedSourceIds.map(
+      (sourceId) => completedView.citationNumbers.get(sourceId),
+    );
+    expect(acceptedCitationNumbers).toEqual([1, 2]);
+    expect(
+      completedView.citationNumbers.get(researchFlowRejectedSourceId),
+    ).toBeUndefined();
+    expect(reportDeltas.map((event) => event.text).join("")).toContain(
+      acceptedCitationNumbers.map((number) => `[${number}]`).join(" "),
+    );
 
     expect(firstRun.fixture.searchCalls).toEqual([
       { query: researchFlowInitialQuery, timeRange: "year" },
@@ -231,5 +298,77 @@ describe("POST /api/research complete workflow", () => {
         .flatMap((event) => event.sources.map((source) => source.id)),
     ).toEqual(collectedSources.map((source) => source.id));
     expect(repeatedCompleted).toEqual(completed);
+  });
+
+  it("aborts the real report provider and emits one cancellation terminal", async () => {
+    const fixture = createResearchFlowFixture();
+    const requestController = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let draftDelivered!: () => void;
+    const draftDelivery = new Promise<void>((resolve) => {
+      draftDelivered = resolve;
+    });
+    let lateCallbackSettled!: () => void;
+    const lateCallback = new Promise<void>((resolve) => {
+      lateCallbackSettled = resolve;
+    });
+    fixture.model.generateReport = async (
+      _question,
+      _sources,
+      _evaluations,
+      _partial,
+      modelOptions,
+    ) => {
+      modelOptions?.onModelCall?.();
+      providerSignal = modelOptions?.abortSignal;
+      await modelOptions?.onPartialReport?.({ title: "Delivered draft" });
+      draftDelivered();
+      await new Promise<void>((resolve) => {
+        if (providerSignal?.aborted) resolve();
+        else providerSignal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await Promise.resolve(
+        modelOptions?.onPartialReport?.({ title: "Late draft" }),
+      ).catch(() => undefined);
+      lateCallbackSettled();
+      return cancellationReport;
+    };
+    const post = createResearchRoute({
+      createModel: () => fixture.model,
+      runResearch,
+      searchWeb: fixture.searchWeb,
+      extractSources: fixture.extractSources,
+    });
+    const response = await post(new Request("http://localhost/api/research", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(researchFlowInput),
+      signal: requestController.signal,
+    }));
+    const reader = response.body!.getReader();
+    const eventsBeforeCancellation: ResearchEvent[] = [];
+
+    while (!eventsBeforeCancellation.some((event) => event.type === "report.delta")) {
+      const next = await reader.read();
+      if (next.done) throw new Error("Research stream closed before the first report delta");
+      eventsBeforeCancellation.push(
+        decodeEventLine(new TextDecoder().decode(next.value)),
+      );
+    }
+    await draftDelivery;
+    requestController.abort(new DOMException("client cancelled", "AbortError"));
+
+    const remaining = await readRemainingEvents(reader, new Uint8Array());
+    await lateCallback;
+    const events = [...eventsBeforeCancellation, ...remaining.events];
+    const terminalEvents = events.filter((event) => terminalTypes.has(event.type));
+    const cancellationIndex = events.findIndex(
+      (event) => event.type === "research.cancelled",
+    );
+
+    expect(providerSignal?.aborted).toBe(true);
+    expect(terminalEvents).toEqual([{ type: "research.cancelled" }]);
+    expect(cancellationIndex).toBeGreaterThan(-1);
+    expect(events.slice(cancellationIndex + 1)).toEqual([]);
   });
 });

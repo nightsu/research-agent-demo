@@ -9,17 +9,18 @@ export interface ResearchReportViewProps {
   report: ResearchReport;
   sources: Source[];
   citationNumbers?: Map<string, number>;
+  animate?: boolean;
   onCitation(sourceId: string): void;
 }
 
-export function ResearchReportView({ report, sources, citationNumbers = buildCitationNumbers(sources), onCitation }: ResearchReportViewProps) {
+export function ResearchReportView({ report, sources, citationNumbers = buildCitationNumbers(sources), animate = true, onCitation }: ResearchReportViewProps) {
   const sourceUrlByCanonicalUrl = new Map(
     sources.map((source) => [canonicalizeUrl(source.url), source.url]),
   );
   const markdownComponents = createMarkdownComponents(sourceUrlByCanonicalUrl);
 
   return (
-    <article className="research-report" aria-labelledby="report-title">
+    <article className="research-report" data-animate={animate} aria-labelledby="report-title">
       <p className="eyebrow">Research report</p>
       <h2 id="report-title">{report.title}</h2>
       <section>
