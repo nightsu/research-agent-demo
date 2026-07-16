@@ -123,6 +123,71 @@ sequenceDiagram
 
 图中从 `createResearchRoute()` handler 发出的每个箭头实际上都是 Zod 校验后的一行 NDJSON。`app/api/research/route.ts` 不实现协议，只把生产依赖传给 factory 并暴露 Next.js 允许的 route exports。客户端不能假设网络 chunk 等于一条事件，因此 `useResearchStream` 先用 `TextDecoder` 累积字节，再按换行切分和调用 `decodeEventLine`。
 
+## 真实报告流
+
+最终报告不是“完整 DOM 加一层逐字动画”。它来自 AI SDK 的结构化 partial output：同一次正常模型调用一边产生可阅读草稿，一边在结束时交付必须通过 Zod、来源 ID 和引用完整性校验的正式 `ResearchReport`。
+
+```mermaid
+flowchart TB
+    Model["AI SDK streamText<br/>Output.object(reportSchema)"]
+    Partial["partialOutputStream<br/>PartialResearchReport snapshots"]
+    Callbacks["provider callbacks<br/>serial await + stream cleanup"]
+    Repair["hidden once-only repair<br/>no second visible draft"]
+    Projector["reportDraftToMarkdown<br/>append or replace"]
+    Agent["Research Agent<br/>delivery ack then sequence++"]
+    Route["NDJSON route<br/>schema + desiredSize backpressure"]
+    Hook["useResearchStream<br/>ref accumulator + 40 ms flush"]
+    Events["run.events<br/>durable low-frequency facts"]
+    Draft["run.reportDraft<br/>transient Markdown snapshot"]
+    Streamdown["standalone Streamdown<br/>inert links, no images or raw HTML"]
+    Workspace["ResearchWorkbench<br/>responsive scroll owner"]
+    Formal["ResearchReportView<br/>validated citations"]
+
+    Model --> Partial --> Callbacks --> Projector --> Agent --> Route --> Hook
+    Model -->|"partial stream ends"| Callbacks
+    Callbacks -->|"final output validates"| Agent
+    Callbacks -->|"repairable structured-output error"| Repair --> Agent
+    Hook -->|"stage and terminal events"| Events
+    Hook -->|"report.delta only"| Draft --> Streamdown --> Workspace
+    Events --> Workspace
+    Agent -->|"report.completed or research.partial"| Route
+    Workspace -->|"same document flow, no replay"| Formal
+```
+
+### 服务端：partial snapshot 到有序 delta
+
+`generateReport()` 消费 `partialOutputStream`，并串行 `await onPartialReport`。这样 provider stream 不会跑在应用背压前面；consumer 中断或回调失败时，迭代器清理也不会被随后读取 final output 的错误覆盖。每个 partial object 先经过纯函数 `reportDraftToMarkdown()`，只按正式报告顺序投影已经存在的字段和已知引用编号，不补造字段、URL 或来源。
+
+partial structured output 通常只增长，但这不是协议保证。若新 Markdown 以旧值开头，`createReportDraftUpdate()` 只发送后缀 `append`；若模型修订了前文，则发送完整 `replace` snapshot；相同投影不发事件。Agent 只有在 route 确认交付后才递增从 0 开始的 `sequence`，因此客户端遇到重复、跳号或倒序时可以把它当作协议错误，而不是猜测性合并。错误会保留最后一版合法草稿，公开失败信息仍经过安全映射，原始 provider 输出、私有推理和修复提示不会进入 NDJSON。
+
+partial stream 结束后先发 `report.validating`。只有最终结构化输出属于可修复错误时才发 `report.repairing`，并最多进行一次隐藏的非流式修复；第二次尝试不回放 delta，避免清空或反驳用户正在阅读的第一版草稿。鉴权、限流、网络、取消和 callback 错误不伪装成格式修复。修复也失败、网络中断或用户取消时，已有草稿保留为 `incomplete`。
+
+`createResearchRoute()` 继续承担唯一终态与 `ReadableStream.desiredSize` 背压：每个回调必须等上一条 NDJSON 获得容量才能继续。`report.delta` 不是终态；`report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 仍然只能出现一个。
+
+### 客户端：持久事实与瞬态草稿分离
+
+`run.events` 保存可回放的低频研究事实，包括 `report.started`、`report.validating`、`report.repairing` 和唯一终态。高频 `report.delta` 虽然先经过严格 schema 与 sequence 校验，却只进入 ref 中的 accumulator，不追加到 `run.events`。Hook 立即在 ref 上应用 append / replace，每 40 ms 最多向 React flush 一次；终态、取消和失败先同步 flush，避免最后一批合法文本丢失。新运行、重试和 generation 切换同时清理 ref 与 timer，使旧请求不能污染新草稿。
+
+草稿由独立 `streamdown` 包渲染，不安装 assistant-ui，也不引入 Thread、Message 或额外 Runtime。草稿禁用 raw HTML 插件，把链接渲染成不可点击文本并丢弃图片；它没有 `aria-live`，避免每 40 ms 重读整篇文档。`prefers-reduced-motion` 只关闭 caret 和 entry transition，文本本身仍随真实 delta 增长。正式报告继续由 `ResearchReportView` 渲染，并只让已收集来源的安全引用打开 `SourceDrawer`。
+
+### 滚动所有权与正式替换
+
+桌面宽度大于 960 px 时，`.workspace-content` 是右侧唯一纵向 scroll owner，报告草稿保持 `overflow-y: visible`；表格只允许自身横向滚动。宽度不超过 960 px 时，`.workspace-content` 改为 visible overflow，document / window 成为唯一纵向 owner；固定的“Back to latest report”按钮恢复跟随。跨过 960 px 的 media query 时，Workbench 动态迁移 owner 和 following 状态，而不是让两个容器同时滚动。
+
+`report.started` 第一次进入报告 surface 时定位到报告顶部。之后只有仍在 following 状态的内容增长才贴近底部；用户上滚会暂停自动跟随并保持 `scrollTop`，点击按钮恢复。正式报告替换草稿时不再次滚到顶部、不因为终态单独滚到底部，并通过 `hadReportDraft` 关闭 `report-feed` 入场动画，所以阅读位置与内容不会重复播放。
+
+建议按数据实际经过的顺序学习：
+
+1. `lib/agent/research-events.ts`：公开协议、sequence 和错误边界；
+2. `lib/providers/research-model.ts`：`partialOutputStream`、callback、cleanup 与一次隐藏修复；
+3. `lib/agent/report-draft.ts`：partial object 如何变成确定性 Markdown 和 append / replace；
+4. `lib/agent/research-agent.ts`：callback 如何映射为有序事件；
+5. `lib/server/research-route.ts`：NDJSON 背压、取消和唯一终态；
+6. `components/research/use-research-stream.ts`：ref accumulator、40 ms batching 与 protocol failure；
+7. `components/research/streaming-report-draft.tsx`：独立 Streamdown 的渲染安全；
+8. `components/research/research-workbench.tsx`：报告 surface、跟随暂停和响应式 owner 迁移；
+9. `components/research/research-report.tsx` 与 `source-drawer.tsx`：正式替换与引用交互。
+
 ## 一次搜索迭代如何映射到代码
 
 以计划中的第一个 query 为例：
