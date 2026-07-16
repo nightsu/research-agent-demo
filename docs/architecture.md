@@ -34,8 +34,8 @@ flowchart TB
       Hook --> VM --> UI
     end
 
-    subgraph Server[Next.js 服务端]
-      Wrapper[app/api/research/route.ts]
+    subgraph Server["Next.js 服务端"]
+      Wrapper["app/api/research/route.ts"]
       Factory[createResearchRoute]
       Handler[generated POST handler]
       Agent[runResearch]
@@ -58,7 +58,7 @@ flowchart TB
     Hook -- POST /api/research --> Handler
     Handler -- typed NDJSON --> Hook
     Provider -- structured generation --> Model
-    Tavily -- HTTPS --> Web[(Tavily Search / Extract)]
+    Tavily -- HTTPS --> Web[("Tavily Search / Extract")]
 ```
 
 模型与 Tavily 没有直接连线。模型提出计划、评价和跟进查询；只有 `runResearch` 能把经过 schema 和预算约束的数据交给 `searchWeb` / `extractSources`，而凭据只存在于服务端适配器。
@@ -73,7 +73,7 @@ sequenceDiagram
     participant F as createResearchRoute
     participant R as generated POST handler
     participant A as runResearch
-    participant M as ResearchModel
+    participant M as ResearchModel / Provider
     participant T as Tavily
 
     Note over W,R: module initialization
@@ -115,8 +115,23 @@ sequenceDiagram
     end
     A-->>R: report.started
     R-->>H: typed NDJSON event
-    A->>M: generateReport()
-    A->>A: validateReportCitations()
+    A->>M: generateReport(callbacks)
+    loop valid partialOutputStream snapshots
+      M-->>A: onPartialReport(partial)
+      A-->>R: report.delta
+      R-->>H: typed NDJSON event
+    end
+    M-->>A: onValidating()
+    A-->>R: report.validating
+    R-->>H: typed NDJSON event
+    M->>M: final reportSchema + citation validation
+    opt repairable final structured-output error
+      M-->>A: onRepairing()
+      A-->>R: report.repairing
+      R-->>H: typed NDJSON event
+      M->>M: one hidden non-streaming repair + validation
+    end
+    M-->>A: validated ResearchReport
     A-->>R: report.completed or research.partial
     R-->>H: typed NDJSON terminal event
 ```
