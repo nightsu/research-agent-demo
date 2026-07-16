@@ -70,6 +70,12 @@ const terminalStatuses: Partial<
   "research.cancelled": "cancelled",
   "research.failed": "failed",
 };
+const terminalRunStatuses = new Set<ResearchRunStatus>([
+  "completed",
+  "partial",
+  "cancelled",
+  "failed",
+]);
 
 function localFailureEvent(
   message: string,
@@ -133,6 +139,10 @@ function reducer(state: State, action: Action): State {
     };
   }
   if (action.type === "fail") {
+    if (state.events.some(isTerminal) || terminalRunStatuses.has(state.status)) {
+      // 已验证的首个终态是唯一事实来源；传输尾部或清理错误不能再改写它。
+      return state;
+    }
     const event = localFailureEvent(action.error, action.recoverable);
     return {
       ...state,
@@ -290,6 +300,7 @@ export function useResearchStream(): {
 
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       let protocolFailure = false;
+      let terminalSeen = false;
 
       try {
         const response = await fetch("/api/research", {
@@ -325,7 +336,6 @@ export function useResearchStream(): {
         reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8", { fatal: true });
         let buffer = "";
-        let terminalSeen = false;
 
         const processRecord = (record: string) => {
           if (terminalSeen) throw new ProtocolError();
@@ -433,6 +443,9 @@ export function useResearchStream(): {
             error: "Research stream protocol error.",
             recoverable: true,
           });
+        } else if (terminalSeen) {
+          // 合法终态后的传输尾部错误不影响已验证结果，也不合成本地失败事件。
+          return;
         } else if (controller.signal.aborted) {
           flushReportDraft(generation);
           dispatch({ type: "cancel", generation });

@@ -88,9 +88,11 @@ const draftRehypePlugins: NonNullable<StreamdownProps["rehypePlugins"]> = [];
 
 export function StreamingReportDraft({ draft }: StreamingReportDraftProps) {
   const isStreaming = draft.status === "streaming";
+  // 校验和修复仍属于处理中；只有 incomplete 才是停止工作的草稿。
+  const isBusy = draft.status !== "incomplete";
 
   return (
-    <article className="streaming-report-draft" aria-busy={isStreaming}>
+    <article className="streaming-report-draft" aria-busy={isBusy}>
       {/* 正文和本地状态都不 live announce；由 Workbench 的单一状态区统一播报，避免重复。 */}
       <p className={`draft-status draft-status-${draft.status}`}>
         {draftStatusText[draft.status]}

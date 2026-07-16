@@ -75,6 +75,7 @@ describe("StreamingReportDraft", () => {
   ] as const)("stops the caret while %s and leaves status announcement to the Workbench", (status, message) => {
     render(<StreamingReportDraft draft={{ ...streamingDraft, status }} />);
 
+    expect(screen.getByRole("article")).toHaveAttribute("aria-busy", "true");
     expect(lastStreamdownProps().isAnimating).toBe(false);
     expect(screen.getByText(message)).toBeVisible();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();

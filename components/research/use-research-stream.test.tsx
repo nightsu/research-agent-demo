@@ -701,6 +701,58 @@ describe("useResearchStream", () => {
     );
   });
 
+  it.each([
+    [
+      { type: "report.completed", report } satisfies ResearchEvent,
+      "completed",
+      undefined,
+    ],
+    [
+      {
+        type: "research.partial",
+        report,
+        reason: "Source limit reached.",
+      } satisfies ResearchEvent,
+      "partial",
+      undefined,
+    ],
+    [
+      { type: "research.cancelled" } satisfies ResearchEvent,
+      "cancelled",
+      undefined,
+    ],
+    [
+      {
+        type: "research.failed",
+        message: "Safe server error.",
+        recoverable: false,
+      } satisfies ResearchEvent,
+      "failed",
+      "Safe server error.",
+    ],
+  ] as const)(
+    "keeps the first %s terminal outcome when the next stream read fails",
+    async (terminal, status, error) => {
+      const stream = deferredResponse();
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+      const { result } = renderHook(() => useResearchStream());
+      let promise!: Promise<void>;
+      act(() => {
+        promise = result.current.start(input);
+      });
+
+      act(() => stream.enqueue(line(terminal)));
+      await waitFor(() => expect(result.current.run.events).toEqual([terminal]));
+      act(() => stream.error(new Error("transport tail secret")));
+      await act(() => promise);
+
+      expect(result.current.run.status).toBe(status);
+      expect(result.current.run.events).toEqual([terminal]);
+      expect(result.current.run.error).toBe(error);
+      expect(JSON.stringify(result.current.run)).not.toContain("transport tail secret");
+    },
+  );
+
   it("sets running immediately and posts parsed input with JSON headers and a signal", async () => {
     const stream = deferredResponse();
     const fetchMock = vi.fn().mockResolvedValue(stream.response);
@@ -912,14 +964,17 @@ describe("useResearchStream", () => {
     expect(cancelled).toHaveBeenCalledOnce();
   });
 
-  it("rejects a second terminal or a record after a terminal", async () => {
+  it.each([
+    ["a second terminal", line({ type: "research.cancelled" })],
+    ["a record after the terminal", line({ type: "plan.started", question: input.question })],
+  ])("cancels the reader after %s but keeps the first terminal authoritative", async (_name, trailingRecord) => {
     const terminal: ResearchEvent = { type: "research.cancelled" };
     const cancelled = vi.fn();
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         responseFromChunks(
-          [line(terminal), line({ type: "research.cancelled" })],
+          [line(terminal), trailingRecord],
           { onCancel: cancelled },
         ),
       ),
@@ -928,10 +983,33 @@ describe("useResearchStream", () => {
 
     await act(() => result.current.start(input));
 
-    expect(result.current.run.status).toBe("failed");
+    expect(result.current.run.status).toBe("cancelled");
     expect(result.current.run.events).toEqual([terminal]);
-    expect(result.current.run.error).toBe("Research stream protocol error.");
+    expect(result.current.run.error).toBeUndefined();
     expect(cancelled).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a local cancel after a server terminal has already been accepted", async () => {
+    const terminal: ResearchEvent = { type: "report.completed", report };
+    const stream = deferredResponse();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    const { result } = renderHook(() => useResearchStream());
+    let promise!: Promise<void>;
+    act(() => {
+      promise = result.current.start(input);
+    });
+
+    act(() => stream.enqueue(line(terminal)));
+    await waitFor(() => expect(result.current.run.events).toEqual([terminal]));
+    act(() => result.current.cancel());
+    stream.error(new DOMException("aborted", "AbortError"));
+    await act(() => promise);
+
+    expect(result.current.run).toEqual({
+      status: "completed",
+      events: [terminal],
+      hadReportDraft: false,
+    });
   });
 
   it("cancels promptly, aborts the request, and does not overwrite a terminal run", async () => {
