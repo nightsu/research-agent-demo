@@ -79,6 +79,28 @@ const sourceEvaluationsSchema = sourceEvaluationSchema.array().max(50);
 const sourceEvaluationsOutputSchema = z.object({
   evaluations: sourceEvaluationsSchema,
 });
+const partialReportFindingSchema = z.object({
+  claim: reportSchema.shape.findings.element.shape.claim.optional(),
+  sourceIds: z
+    .array(
+      reportSchema.shape.findings.element.shape.sourceIds.element.optional(),
+    )
+    .optional(),
+  confidence:
+    reportSchema.shape.findings.element.shape.confidence.optional(),
+});
+const partialReportSchema = z.object({
+  title: reportSchema.shape.title.optional(),
+  executiveSummary: reportSchema.shape.executiveSummary.optional(),
+  findings: z.array(partialReportFindingSchema.optional()).optional(),
+  trends: z.array(reportSchema.shape.trends.element.optional()).optional(),
+  disagreements: z
+    .array(reportSchema.shape.disagreements.element.optional())
+    .optional(),
+  limitations: z
+    .array(reportSchema.shape.limitations.element.optional())
+    .optional(),
+});
 
 function appendJsonContract<T>(prompt: string, schema: ZodType<T>): string {
   const jsonSchema = JSON.stringify(
@@ -292,15 +314,6 @@ function createStreamingReportOutputStrategy(
   };
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 async function generateStreamingReport(
   prompt: string,
   sources: Source[],
@@ -326,9 +339,10 @@ async function generateStreamingReport(
 
   try {
     for await (const partial of result.partialOutputStream) {
-      if (isPlainObject(partial)) {
-        // partial JSON 只是流式草稿，字段尚未完成；正式结果仍在下方通过 Zod 严格校验。
-        await options.onPartialReport?.(partial as PartialResearchReport);
+      const parsedPartial = partialReportSchema.safeParse(partial);
+      if (parsedPartial.success) {
+        // partial 校验只负责类型安全收窄，不要求字段完整；无效快照跳过，由最终 Zod 校验或 repair 接管。
+        await options.onPartialReport?.(parsedPartial.data);
       }
     }
   } catch (streamError) {

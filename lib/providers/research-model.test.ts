@@ -281,6 +281,77 @@ describe("structured research model", () => {
     );
   });
 
+  it("skips prompted JSON partials with invalid top-level or nested field types", async () => {
+    const partials: unknown[] = [
+      { title: 1 },
+      { findings: [{ claim: 2, sourceIds: [3] }] },
+      { title: "Valid partial" },
+    ];
+    const received: PartialResearchReport[] = [];
+    let streamSignal: AbortSignal | undefined;
+    streamText.mockImplementationOnce((request) => {
+      streamSignal = request.abortSignal;
+      return reportStream(partials, Promise.resolve(report));
+    });
+
+    const result = await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      true,
+      {
+        onPartialReport: (partial) => {
+          received.push(partial);
+        },
+      },
+    );
+
+    expect(result).toEqual(report);
+    expect(received).toEqual([{ title: "Valid partial" }]);
+    expect(streamSignal?.aborted).toBe(false);
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("strips unknown fields from otherwise valid prompted JSON partials", async () => {
+    streamText.mockReturnValueOnce(
+      reportStream(
+        [
+          {
+            title: "Safe partial",
+            privateField: "remove me",
+            findings: [
+              {
+                claim: "Typed claim",
+                sourceIds: ["source-kimi"],
+                privateFindingField: "remove me too",
+              },
+            ],
+          },
+        ],
+        Promise.resolve(report),
+      ),
+    );
+    const onPartialReport = vi.fn();
+
+    await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      true,
+      { onPartialReport },
+    );
+
+    expect(onPartialReport).toHaveBeenCalledWith({
+      title: "Safe partial",
+      findings: [
+        {
+          claim: "Typed claim",
+          sourceIds: ["source-kimi"],
+        },
+      ],
+    });
+  });
+
   it("streams native structured report snapshots with callback backpressure before validating", async () => {
     getResearchModelSelection.mockReturnValueOnce({
       model: selectedModel,

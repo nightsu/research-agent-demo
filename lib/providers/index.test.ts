@@ -202,6 +202,28 @@ describe("research provider selection", () => {
     expect(provider).toHaveBeenCalledWith("future-native-model");
   });
 
+  it("returns frozen capabilities that cannot pollute a later selection", async () => {
+    process.env.MOONSHOT_API_KEY = "kimi-key";
+    const provider = vi.fn(() => ({ provider: "kimi-model" }));
+    createOpenAICompatible.mockReturnValue(provider);
+    const { getResearchModelSelection } = await import("./index");
+
+    const firstSelection = getResearchModelSelection();
+
+    expect(Object.isFrozen(firstSelection.capabilities)).toBe(true);
+    expect(
+      Reflect.set(
+        firstSelection.capabilities as { structuredOutputs: boolean },
+        "structuredOutputs",
+        true,
+      ),
+    ).toBe(false);
+    expect(getResearchModelSelection().capabilities).toEqual({
+      structuredOutputs: false,
+      thinkingMode: "disabled",
+    });
+  });
+
   it("rejects unsupported providers with a clear error", async () => {
     process.env.AI_PROVIDER = "unknown";
     const { getProviderName, getResearchModel, getResearchModelSelection } =
