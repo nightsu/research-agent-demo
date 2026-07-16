@@ -85,6 +85,23 @@ describe("report draft projection", () => {
       "- Observable workflows are becoming common.",
     ].join("\n"));
   });
+
+  it("omits whitespace-only content without rewriting visible model text", () => {
+    const partial: PartialResearchReport = {
+      title: " \n ",
+      executiveSummary: "\t",
+      findings: [{ claim: "  ", confidence: "low", sourceIds: ["source-1"] }],
+      trends: [" ", " Keep the model spacing. "],
+      disagreements: ["\n"],
+      limitations: ["  \t"],
+    };
+
+    expect(reportDraftToMarkdown(partial, new Map([["source-1", 1]]))).toBe([
+      "## Trends",
+      "",
+      "-  Keep the model spacing. ",
+    ].join("\n"));
+  });
 });
 
 describe("report draft updates", () => {

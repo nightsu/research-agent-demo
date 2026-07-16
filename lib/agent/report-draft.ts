@@ -15,7 +15,7 @@ function renderListSection(
   heading: string,
   items: ReadonlyArray<string | undefined> | undefined,
 ): string | undefined {
-  const renderedItems = items?.filter((item): item is string => Boolean(item));
+  const renderedItems = items?.filter((item): item is string => Boolean(item?.trim()));
   if (!renderedItems?.length) {
     return undefined;
   }
@@ -29,18 +29,18 @@ export function reportDraftToMarkdown(
 ): string {
   const sections: Array<string | undefined> = [];
 
-  if (partial.title) {
+  if (partial.title?.trim()) {
     sections.push(`# ${partial.title}`);
   }
 
-  if (partial.executiveSummary) {
+  if (partial.executiveSummary?.trim()) {
     sections.push(`## Executive summary\n\n${partial.executiveSummary}`);
   }
 
   const findings = partial.findings
     // AI SDK 的 DeepPartial 会在数组槽位和对象字段尚未生成时放入 undefined，投影边界必须逐层收窄。
     ?.filter((finding): finding is NonNullable<typeof finding> & { claim: string } => (
-      Boolean(finding?.claim)
+      Boolean(finding?.claim?.trim())
     ))
     .map((finding) => {
       const citations = finding.sourceIds

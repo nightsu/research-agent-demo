@@ -209,14 +209,38 @@ describe("research event protocol", () => {
   });
 
   it("applies the encoded byte limit to report deltas", () => {
-    const oversized = {
+    const oversized: ResearchEvent = {
       type: "report.delta",
       sequence: 0,
       mode: "append",
-      text: "研".repeat(MAX_ENCODED_EVENT_BYTES),
-    } as ResearchEvent;
+      text: "研".repeat(Math.floor(MAX_ENCODED_EVENT_BYTES / 3)),
+    };
+    const json = JSON.stringify(oversized);
+    const encodedBytes = new TextEncoder().encode(`${json}\n`).byteLength;
+
+    // 中文字符能让字符数保持在限制内、UTF-8 字节数越界，防止实现退化为 JS string.length。
+    expect(json.length).toBeLessThan(MAX_ENCODED_EVENT_BYTES);
+    expect(encodedBytes).toBeGreaterThan(MAX_ENCODED_EVENT_BYTES);
 
     expect(() => encodeEvent(oversized)).toThrow(/event.*size/i);
+  });
+
+  it("round-trips a report delta immediately below the encoded byte limit", () => {
+    const eventWithoutText: ResearchEvent = {
+      type: "report.delta",
+      sequence: 0,
+      mode: "append",
+      text: "",
+    };
+    const fixedBytes = new TextEncoder().encode(`${JSON.stringify(eventWithoutText)}\n`).byteLength;
+    const event: ResearchEvent = {
+      ...eventWithoutText,
+      text: "x".repeat(MAX_ENCODED_EVENT_BYTES - fixedBytes - 1),
+    };
+    const encoded = encodeEvent(event);
+
+    expect(new TextEncoder().encode(encoded).byteLength).toBe(MAX_ENCODED_EVENT_BYTES - 1);
+    expect(decodeEventLine(encoded)).toEqual(event);
   });
 
   it.each([
