@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 const styles = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
 function ruleBody(selector: string, source = styles) {
-  const uncommentedSource = source.replace(/\/\*[\s\S]*?\*\//g, "");
+  // `@source "../node_modules/streamdown/dist/*.js"` 含有字面量 `/*`；只剥离由空白起始的真实 CSS 注释。
+  const uncommentedSource = source.replace(/(^|\s)\/\*[\s\S]*?\*\//g, "$1");
   const rulePattern = /([^{}]+)\{([^{}]*)\}/g;
   let match: RegExpExecArray | null;
 
@@ -61,6 +62,42 @@ describe("desktop research workspace layout", () => {
     expect(eventPre).toMatch(/overflow:\s*visible;/);
     expect(eventPre).not.toMatch(/overflow-x:\s*auto;/);
     expect(eventPre).not.toMatch(/overflow-y:\s*auto;/);
+  });
+
+  it("keeps the streaming draft in the existing workspace scroll flow", () => {
+    const draft = ruleBody(".streaming-report-draft");
+    const draftBody = ruleBody(".streaming-report-draft-body");
+
+    expect(draft).toMatch(/overflow:\s*visible;/);
+    expect(draftBody).toMatch(/overflow:\s*visible;/);
+    expect(draft).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draftBody).not.toMatch(/(?:height|max-height)\s*:/);
+    expect(draft).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+    expect(draftBody).not.toMatch(/overflow-y:\s*(?:auto|scroll);/);
+  });
+
+  it("fully disables streaming-draft motion when reduced motion is requested", () => {
+    const reducedMotionStart = styles.indexOf("@media (prefers-reduced-motion: reduce)");
+    const reducedMotionStyles = styles.slice(reducedMotionStart);
+
+    expect(
+      ruleBody(
+        ".streaming-report-draft-body > :last-child::after",
+        reducedMotionStyles,
+      ),
+    ).toMatch(/animation:\s*none\s*!important;/);
+    expect(
+      ruleBody(
+        ".streaming-report-draft-body [data-sd-animate]",
+        reducedMotionStyles,
+      ),
+    ).toMatch(/animation:\s*none\s*!important;/);
+    expect(ruleBody(".streaming-report-draft-body *", reducedMotionStyles)).toMatch(
+      /transition:\s*none\s*!important;/,
+    );
+    expect(ruleBody(".draft-status", reducedMotionStyles)).toMatch(
+      /transition:\s*none\s*!important;/,
+    );
   });
 
   it("ignores declarations inside CSS comments", () => {
