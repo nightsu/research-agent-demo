@@ -831,7 +831,7 @@ git add README.md docs/architecture.md docs/superpowers/specs/2026-07-16-streami
 git commit -m "docs: document streaming provider strategies"
 ```
 
-- [ ] **Step 7: Review the complete commit range**
+- [x] **Step 7: Review the complete commit range**
 
 Run:
 
@@ -922,6 +922,19 @@ The following evidence through the end of “Responsive owner, accessibility and
 - A light Retry → Stop recheck found exactly one “Stop research” control during the restarted run; Stop returned `Research cancelled. Latest event: Research cancelled.` and restored Retry / New research controls. The earlier pre-fix synthesis-draft preservation evidence remains applicable because the compatibility commits did not change Workbench cancellation logic; automated tests continue to cover retained incomplete text and generation isolation.
 - Browser console contained one hydration mismatch whose diff showed the external Chrome extension attribute `trancy-version="7.8.9"` on `<html>`. No other browser warning/error was captured. Server output repeated that extension-originated hydration message but contained no application/provider compatibility warning.
 - Browser tabs were finalized and the viewport override was reset. The development server was stopped after QA.
+
+### Final full-range review (authoritative release verdict)
+
+- A fresh reviewer inspected the complete implementation range `9b1ec04..a49ea69`, covering the protocol, provider strategies, workflow integration, client buffering, Streamdown renderer, scroll ownership, documentation, and the review-driven fixes.
+- Final verdict: **Ready — Yes**. Remaining findings: **Critical 0 / Important 0 / Minor 0**.
+- `npm test`: exit 0, 23 test files and **410 tests passed**.
+- `npm run lint`: exit 0.
+- `npm run typecheck`: exit 0.
+- `npm run build`: the sandboxed run hit only Turbopack's environment restriction (`binding to a port: Operation not permitted`); the approved rerun outside that restriction exited 0 and generated `/`, `/_not-found`, and `/api/research`.
+- `git diff --check`: exit 0.
+- `npm ls streamdown`: exit 0, `streamdown@2.5.0`.
+- `rg -n -i '@assistant-ui|assistant-ui' app components lib package.json package-lock.json`: no output and expected exit 1, confirming no assistant-ui dependency was introduced.
+- Review fixes preserve the first terminal outcome against late transport errors, expose busy state through validation/repair phases, correct the dependency-verification documentation, and align the terminal-failure comment with the implemented behavior (`c2762da`, `bce26ec`, `a49ea69`).
 
 ## Plan self-review checklist
 
