@@ -32,7 +32,7 @@ export function getProviderName(): ProviderName {
   );
 }
 
-export function getResearchModel() {
+export function getResearchModelSelection() {
   const providerName = getProviderName();
 
   if (providerName === "kimi") {
@@ -46,8 +46,14 @@ export function getResearchModel() {
       transformRequestBody: createKimiRequestTransformer(capabilities),
     });
 
-    return provider(modelId);
+    return {
+      model: provider(modelId),
+      capabilities,
+    };
   }
+
+  const modelId = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
+  const capabilities = getModelCapabilities("deepseek", modelId);
 
   // This explicit workflow uses separate structured generations, so it does not
   // replay reasoning_content. A future autonomous DeepSeek tool-call loop must
@@ -58,5 +64,12 @@ export function getResearchModel() {
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   });
 
-  return provider(process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash");
+  return {
+    model: provider(modelId),
+    capabilities,
+  };
+}
+
+export function getResearchModel() {
+  return getResearchModelSelection().model;
 }

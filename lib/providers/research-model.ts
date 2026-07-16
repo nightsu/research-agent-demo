@@ -20,7 +20,8 @@ import {
   sourceEvaluationPrompt,
 } from "../agent/prompts";
 import type { PartialResearchReport } from "../agent/report-draft";
-import { getResearchModel } from "./index";
+import { getResearchModelSelection } from "./index";
+import type { ModelCapabilities } from "./model-capabilities";
 
 export interface ResearchModel {
   generatePlan(
@@ -205,7 +206,7 @@ async function generateValidated<T>(
   options: ResearchModelOptions = {},
   validate: (output: T) => T = (output) => output,
 ): Promise<T> {
-  const model = getResearchModel();
+  const { model } = getResearchModelSelection();
 
   const attempt = async (attemptPrompt: string): Promise<T> => {
     return generateStructuredAttempt(
@@ -239,7 +240,7 @@ async function generateValidated<T>(
 }
 
 async function generateStructuredAttempt<T>(
-  model: ReturnType<typeof getResearchModel>,
+  model: ReturnType<typeof getResearchModelSelection>["model"],
   schema: ZodType<T>,
   prompt: string,
   maxOutputTokens: number,
@@ -274,13 +275,40 @@ async function settleStructuredOutput(result: {
   }
 }
 
+function createStreamingReportOutputStrategy(
+  prompt: string,
+  capabilities: ModelCapabilities,
+) {
+  if (capabilities.structuredOutputs) {
+    return {
+      prompt,
+      output: Output.object({ schema: reportSchema }),
+    };
+  }
+
+  return {
+    prompt: appendJsonContract(prompt, reportSchema),
+    output: Output.json(),
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 async function generateStreamingReport(
   prompt: string,
   sources: Source[],
   evaluations: SourceEvaluation[],
   options: ResearchReportModelOptions = {},
 ): Promise<ResearchReport> {
-  const model = getResearchModel();
+  const { model, capabilities } = getResearchModelSelection();
+  const strategy = createStreamingReportOutputStrategy(prompt, capabilities);
   const streamAbortController = new AbortController();
   const streamAbortSignal = options.abortSignal
     ? AbortSignal.any([options.abortSignal, streamAbortController.signal])
@@ -290,15 +318,18 @@ async function generateStreamingReport(
   const result = streamText({
     model,
     system: RESEARCH_SYSTEM_PROMPT,
-    prompt,
-    output: Output.object({ schema: reportSchema }),
+    prompt: strategy.prompt,
+    output: strategy.output,
     abortSignal: streamAbortSignal,
     maxOutputTokens: 12_000,
   });
 
   try {
     for await (const partial of result.partialOutputStream) {
-      await options.onPartialReport?.(partial);
+      if (isPlainObject(partial)) {
+        // partial JSON 只是流式草稿，字段尚未完成；正式结果仍在下方通过 Zod 严格校验。
+        await options.onPartialReport?.(partial as PartialResearchReport);
+      }
     }
   } catch (streamError) {
     streamAbortController.abort(streamError);
@@ -318,7 +349,8 @@ async function generateStreamingReport(
 
   try {
     const output = await result.output;
-    return validateReportCitations(sources, evaluations, output);
+    const report = reportSchema.parse(output);
+    return validateReportCitations(sources, evaluations, report);
   } catch (initialError) {
     if (!isRepairableStructuredOutputError(initialError)) {
       throw initialError;

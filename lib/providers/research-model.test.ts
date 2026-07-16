@@ -19,10 +19,16 @@ import {
   sourceEvaluationPrompt,
 } from "../agent/prompts";
 
-const { generateText, streamText, getResearchModel, jsonOutput, objectOutput } = vi.hoisted(() => ({
+const {
+  generateText,
+  streamText,
+  getResearchModelSelection,
+  jsonOutput,
+  objectOutput,
+} = vi.hoisted(() => ({
   generateText: vi.fn(),
   streamText: vi.fn(),
-  getResearchModel: vi.fn(),
+  getResearchModelSelection: vi.fn(),
   jsonOutput: vi.fn(() => ({ kind: "json" })),
   objectOutput: vi.fn((options) => ({ kind: "object", ...options })),
 }));
@@ -38,7 +44,7 @@ vi.mock("ai", async (importOriginal) => {
   };
 });
 
-vi.mock("./index", () => ({ getResearchModel }));
+vi.mock("./index", () => ({ getResearchModelSelection }));
 
 import {
   MissingStructuredOutputError,
@@ -130,8 +136,8 @@ async function* controlledAsyncIterable<T>(
 }
 
 function reportStream(
-  partials: PartialResearchReport[],
-  finalOutput: PromiseLike<typeof report> = Promise.resolve(report),
+  partials: unknown[],
+  finalOutput: PromiseLike<unknown> = Promise.resolve(report),
 ) {
   return {
     partialOutputStream: controlledAsyncIterable(partials),
@@ -143,7 +149,13 @@ describe("structured research model", () => {
   beforeEach(() => {
     generateText.mockReset();
     streamText.mockReset();
-    getResearchModel.mockReset().mockReturnValue(selectedModel);
+    getResearchModelSelection.mockReset().mockReturnValue({
+      model: selectedModel,
+      capabilities: {
+        structuredOutputs: false,
+        thinkingMode: "disabled",
+      },
+    });
     jsonOutput.mockClear();
     objectOutput.mockClear();
   });
@@ -192,7 +204,7 @@ describe("structured research model", () => {
           : await researchModel.assessEvidence(question, sources, evaluations);
 
     expect(result).toEqual(publicResult);
-    expect(getResearchModel).toHaveBeenCalledTimes(1);
+    expect(getResearchModelSelection).toHaveBeenCalledTimes(1);
     expect(jsonOutput).toHaveBeenCalledTimes(1);
     expect(schema.safeParse(publicResult).success).toBe(true);
     expect(generateText).toHaveBeenCalledTimes(1);
@@ -223,7 +235,60 @@ describe("structured research model", () => {
     expect(Object.keys(outputSchema.properties as object)).toEqual(topLevelKeys);
   });
 
-  it("streams structured report snapshots with callback backpressure before validating", async () => {
+  it("streams prompted JSON reports with a schema contract and only forwards object partials", async () => {
+    const partials: unknown[] = [
+      null,
+      "raw JSON prefix",
+      [],
+      { title: "Streaming" },
+      {
+        title: "Streaming reports",
+        executiveSummary: "The report grows while the model runs.",
+      },
+    ];
+    const received: PartialResearchReport[] = [];
+    streamText.mockReturnValueOnce(
+      reportStream(partials, Promise.resolve(structuredClone(report))),
+    );
+
+    const result = await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      true,
+      {
+        onPartialReport: (partial) => {
+          received.push(partial);
+        },
+      },
+    );
+
+    expect(result).toEqual(report);
+    expect(received).toEqual(partials.slice(3));
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).not.toHaveBeenCalled();
+    expect(jsonOutput).toHaveBeenCalledOnce();
+    expect(jsonOutput).toHaveBeenCalledWith();
+    expect(objectOutput).not.toHaveBeenCalled();
+    const request = streamText.mock.calls[0][0];
+    expect(request.output).toEqual({ kind: "json" });
+    expect(request.prompt).toContain("Return only one JSON object.");
+    expect(request.prompt.indexOf("Output JSON Schema:")).toBeGreaterThan(
+      request.prompt.lastIndexOf("[END UNTRUSTED"),
+    );
+    expect(parseOutputJsonSchema(request.prompt)).toEqual(
+      toJSONSchema(reportSchema, { target: "draft-7" }),
+    );
+  });
+
+  it("streams native structured report snapshots with callback backpressure before validating", async () => {
+    getResearchModelSelection.mockReturnValueOnce({
+      model: selectedModel,
+      capabilities: {
+        structuredOutputs: true,
+        thinkingMode: "disabled",
+      },
+    });
     const partials: PartialResearchReport[] = [
       { title: "Streaming" },
       {
@@ -292,6 +357,34 @@ describe("structured research model", () => {
     expect(request.prompt).toContain(question);
     expect(request.prompt).toContain("source-kimi");
     expect(request.prompt).toContain("source-deepseek");
+    expect(request.prompt).not.toContain("Return only one JSON object.");
+    expect(request.prompt).not.toContain("Output JSON Schema:");
+  });
+
+  it("repairs one invalid prompted JSON report after strict final validation", async () => {
+    streamText.mockReturnValueOnce(
+      reportStream(
+        [{ title: "Incomplete" }],
+        Promise.resolve({ title: "Incomplete" }),
+      ),
+    );
+    generateText.mockResolvedValueOnce({ output: report });
+    const onRepairing = vi.fn();
+    const onModelCall = vi.fn();
+
+    const result = await createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { onRepairing, onModelCall },
+    );
+
+    expect(result).toEqual(report);
+    expect(streamText).toHaveBeenCalledOnce();
+    expect(generateText).toHaveBeenCalledOnce();
+    expect(onRepairing).toHaveBeenCalledOnce();
+    expect(onModelCall).toHaveBeenCalledTimes(2);
   });
 
   it("repairs one final structured report failure without streaming the repair", async () => {
@@ -334,8 +427,11 @@ describe("structured research model", () => {
     const repairRequest = generateText.mock.calls[0][0];
     expect(streamRequest.abortSignal).not.toBe(controller.signal);
     expect(streamRequest.abortSignal.aborted).toBe(false);
-    expect(objectOutput).toHaveBeenCalledWith({ schema: reportSchema });
-    expect(streamRequest.output).toEqual({ kind: "object", schema: reportSchema });
+    expect(objectOutput).not.toHaveBeenCalled();
+    expect(streamRequest.output).toEqual({ kind: "json" });
+    expect(parseOutputJsonSchema(streamRequest.prompt)).toEqual(
+      toJSONSchema(reportSchema, { target: "draft-7" }),
+    );
     expect(repairRequest).toMatchObject({
       model: selectedModel,
       system: RESEARCH_SYSTEM_PROMPT,
@@ -343,8 +439,9 @@ describe("structured research model", () => {
       maxOutputTokens: 12_000,
     });
     expect(repairRequest.output).toEqual({ kind: "json" });
-    expect(jsonOutput).toHaveBeenCalledOnce();
-    expect(jsonOutput).toHaveBeenCalledWith();
+    expect(jsonOutput).toHaveBeenCalledTimes(2);
+    expect(jsonOutput).toHaveBeenNthCalledWith(1);
+    expect(jsonOutput).toHaveBeenNthCalledWith(2);
     expect(parseOutputJsonSchema(repairRequest.prompt)).toEqual(
       toJSONSchema(reportSchema, { target: "draft-7" }),
     );

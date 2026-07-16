@@ -33,10 +33,17 @@ describe("research provider selection", () => {
     const provider = vi.fn(() => model);
     createOpenAICompatible.mockReturnValue(provider);
 
-    const { getProviderName, getResearchModel } = await import("./index");
+    const { getProviderName, getResearchModel, getResearchModelSelection } =
+      await import("./index");
 
     expect(getProviderName()).toBe("kimi");
-    expect(getResearchModel()).toBe(model);
+    expect(getResearchModelSelection()).toEqual({
+      model,
+      capabilities: {
+        structuredOutputs: false,
+        thinkingMode: "disabled",
+      },
+    });
     expect(createOpenAICompatible).toHaveBeenCalledWith({
       name: "kimi",
       apiKey: "kimi-key",
@@ -53,6 +60,12 @@ describe("research provider selection", () => {
       thinking: { type: "disabled" },
     });
     expect(provider).toHaveBeenCalledWith("kimi-k2.6");
+
+    createOpenAICompatible.mockClear();
+    provider.mockClear();
+    expect(getResearchModel()).toBe(model);
+    expect(createOpenAICompatible).toHaveBeenCalledOnce();
+    expect(provider).toHaveBeenCalledOnce();
   });
 
   it("uses DeepSeek and its defaults when selected", async () => {
@@ -62,10 +75,18 @@ describe("research provider selection", () => {
     const provider = vi.fn(() => model);
     createOpenAICompatible.mockReturnValue(provider);
 
-    const { getProviderName, getResearchModel } = await import("./index");
+    const { getProviderName, getResearchModelSelection } = await import(
+      "./index"
+    );
 
     expect(getProviderName()).toBe("deepseek");
-    expect(getResearchModel()).toBe(model);
+    expect(getResearchModelSelection()).toEqual({
+      model,
+      capabilities: {
+        structuredOutputs: false,
+        thinkingMode: "enabled",
+      },
+    });
     expect(createOpenAICompatible).toHaveBeenCalledWith({
       name: "deepseek",
       apiKey: "deepseek-key",
@@ -114,9 +135,15 @@ describe("research provider selection", () => {
     const provider = vi.fn(() => model);
     createOpenAICompatible.mockReturnValue(provider);
 
-    const { getResearchModel } = await import("./index");
+    const { getResearchModelSelection } = await import("./index");
 
-    expect(getResearchModel()).toBe(model);
+    expect(getResearchModelSelection()).toEqual({
+      model,
+      capabilities: {
+        structuredOutputs: false,
+        thinkingMode: "enabled",
+      },
+    });
     expect(createOpenAICompatible).toHaveBeenCalledWith(expectedProviderOptions);
     if (providerName === "kimi") {
       const transformRequestBody = createOpenAICompatible.mock.calls[0][0]
@@ -132,12 +159,16 @@ describe("research provider selection", () => {
 
   it("rejects unsupported providers with a clear error", async () => {
     process.env.AI_PROVIDER = "unknown";
-    const { getProviderName, getResearchModel } = await import("./index");
+    const { getProviderName, getResearchModel, getResearchModelSelection } =
+      await import("./index");
 
     expect(() => getProviderName()).toThrow(
       'Unsupported AI provider "unknown". Expected "kimi" or "deepseek".',
     );
     expect(() => getResearchModel()).toThrow(
+      'Unsupported AI provider "unknown". Expected "kimi" or "deepseek".',
+    );
+    expect(() => getResearchModelSelection()).toThrow(
       'Unsupported AI provider "unknown". Expected "kimi" or "deepseek".',
     );
     expect(createOpenAICompatible).not.toHaveBeenCalled();
@@ -151,9 +182,14 @@ describe("research provider selection", () => {
     apiKeyName,
   ) => {
     process.env.AI_PROVIDER = providerName;
-    const { getResearchModel } = await import("./index");
+    const { getResearchModel, getResearchModelSelection } = await import(
+      "./index"
+    );
 
     expect(() => getResearchModel()).toThrow(
+      `${apiKeyName} is required for the ${providerName} research provider.`,
+    );
+    expect(() => getResearchModelSelection()).toThrow(
       `${apiKeyName} is required for the ${providerName} research provider.`,
     );
     expect(createOpenAICompatible).not.toHaveBeenCalled();
