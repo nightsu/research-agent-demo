@@ -285,6 +285,34 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 - 不执行来源打开操作；
 - 不把正文设为 `aria-live`。
 
+草稿与正式报告必须共用轻量的 `ReportShell`，使流式生成前后保持同一张“报告纸”：相同的最大宽度、边框、圆角、背景、响应式 padding 和外层语义。Shell 只负责稳定的视觉与 DOM 边界，不解析 Markdown、不持有报告数据，也不接管滚动。
+
+```mermaid
+flowchart LR
+    Delta["report.delta"] --> Streamdown["Streamdown Markdown"]
+    Completed["report.completed"] --> Structured["ResearchReportView"]
+    Streamdown --> Shell["共享 ReportShell"]
+    Structured --> Shell
+    Shell --> Surface["同一纸张、宽度与阅读位置"]
+```
+
+Draft 阶段的展示规则：
+
+- 顶部使用与正式报告相同的 `Research report` eyebrow；生成、校验、修复或未完成状态作为同一元信息行中的紧凑状态标记，不再独占一整块顶部空间；
+- Markdown 一级标题使用正式报告标题的衬线字体、字号、行高与间距；
+- Markdown 二级标题使用正式报告 section heading 的分隔线、字距和大写视觉；三级标题保留较弱的正文子标题层级；
+- 正文、列表、表格和代码继续由 Streamdown 渲染，并保留现有安全组件；
+- Draft 中的 finding 仍是普通 Markdown 内容，不伪造 `confidence` 卡片；引用仍为不可点击文本；
+- `streaming` 时保留真实增量和 caret，`validating` / `repairing` 时停止 caret；
+- 正式结构化报告到达后，在同一个 Shell 尺寸内替换内部渲染器，并继续禁用重复的 `report-feed` 入场动画。
+
+采用“共享外壳 + 双渲染器”，而不是以下两种方案：
+
+1. 只让两套 CSS 看起来相似：改动少，但 DOM 与默认样式仍会继续漂移，完成替换时容易重新出现尺寸跳动。
+2. 把协议升级为 finding / section 级结构化 delta：可以提前渲染置信度卡片和交互引用，但需要新增 partial component 状态机，并处理半成品数组和引用，超出本次视觉连续性的目标。
+
+因此本次不修改 `report.delta` 协议，也不改变 `reportDraftToMarkdown()` 的输出格式。
+
 `ResearchWorkbench` 继续拥有 `.workspace-content`、滚动 ref、底部阈值、ResizeObserver 和“回到最新”按钮。
 
 ### 8.2 页面阶段
@@ -366,6 +394,7 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 | `lib/agent/research-agent.ts` | 编排 started、delta、validating、repairing、completed/partial/failed |
 | `lib/server/research-route.ts` | 延续 NDJSON 背压、取消和唯一终止保证 |
 | `components/research/use-research-stream.ts` | 校验 delta、独立草稿状态、30–50ms 合并、generation 隔离 |
+| `components/research/report-shell.tsx` | 提供草稿与正式报告共用的稳定报告纸外壳，不拥有内容或滚动状态 |
 | `components/research/streaming-report-draft.tsx` | 使用 Streamdown 渲染草稿与阶段提示，不拥有滚动 |
 | `components/research/research-printer-model.ts` | 忽略 delta；将 validating / repairing 投影到当前 Synthesis 记录 |
 | `components/research/research-workbench.tsx` | 草稿/正式报告切换、滚动跟随、完成保持位置 |
@@ -406,6 +435,9 @@ Hook 接收每个合法 delta 后先在 ref 中顺序应用，保证协议状态
 - failed / cancelled 保留草稿；
 - retry / reset / generation 变化清空并隔离迟到 delta；
 - Streamdown streaming、repairing、incomplete 和 reduced-motion 状态；
+- `ReportShell` 在 Draft / Final 两种模式下保持共同的报告 surface class、语义属性和可扩展 className；
+- Draft eyebrow、紧凑状态行以及 h1 / h2 排版与正式报告对应层级一致；
+- 正式报告替换前后外壳宽度、padding 和边框来源一致，不产生第二套 surface 样式；
 - 草稿链接与图片不可交互；
 - 草稿开始时一次回顶；
 - 位于底部时跟随增长；
