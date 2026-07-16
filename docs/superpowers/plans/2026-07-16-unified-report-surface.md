@@ -30,7 +30,7 @@
 - Create: `components/research/report-shell.tsx`
 - Create: `components/research/report-shell.test.tsx`
 
-- [ ] **Step 1: Write the failing shell contract test**
+- [x] **Step 1: Write the failing shell contract test**
 
 ```tsx
 import { cleanup, render, screen } from "@testing-library/react";
@@ -65,7 +65,7 @@ describe("ReportShell", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -75,7 +75,7 @@ npm test -- components/research/report-shell.test.tsx
 
 Expected: FAIL because `./report-shell` does not exist.
 
-- [ ] **Step 3: Implement the minimal shell**
+- [x] **Step 3: Implement the minimal shell**
 
 ```tsx
 import type { ComponentPropsWithoutRef } from "react";
@@ -109,13 +109,13 @@ export function ReportShell({
 }
 ```
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run: `npm test -- components/research/report-shell.test.tsx`
 
 Expected: 1 test passes.
 
-- [ ] **Step 5: Commit the shell**
+- [x] **Step 5: Commit the shell**
 
 ```bash
 git add components/research/report-shell.tsx components/research/report-shell.test.tsx
@@ -128,7 +128,7 @@ git commit -m "feat: add shared research report shell"
 - Modify: `components/research/research-report.tsx`
 - Modify: `components/research/research-report.test.tsx`
 
-- [ ] **Step 1: Extend the final renderer test first**
+- [x] **Step 1: Extend the final renderer test first**
 
 Add these assertions to the existing `sets data-animate` parameterized test after locating `.research-report`:
 
@@ -141,7 +141,7 @@ expect(article).toHaveAttribute("data-animate", marker);
 
 Replace the existing standalone `data-animate` assertion with the assertions above so the test has one article lookup.
 
-- [ ] **Step 2: Run the final renderer test and verify RED**
+- [x] **Step 2: Run the final renderer test and verify RED**
 
 Run:
 
@@ -151,7 +151,7 @@ npm test -- components/research/research-report.test.tsx
 
 Expected: FAIL because the article lacks `report-shell-final` and `data-report-phase="final"`.
 
-- [ ] **Step 3: Wrap the final renderer with ReportShell**
+- [x] **Step 3: Wrap the final renderer with ReportShell**
 
 Add:
 
@@ -173,7 +173,7 @@ Replace only the outer article tags:
 
 Do not move citation handling, Markdown components, section lists, or `report-title` ownership into the shell.
 
-- [ ] **Step 4: Run report tests and verify GREEN**
+- [x] **Step 4: Run report tests and verify GREEN**
 
 Run:
 
@@ -183,7 +183,7 @@ npm test -- components/research/report-shell.test.tsx components/research/resear
 
 Expected: both test files pass, including citation interaction and `data-animate` coverage.
 
-- [ ] **Step 5: Commit the final renderer migration**
+- [x] **Step 5: Commit the final renderer migration**
 
 ```bash
 git add components/research/research-report.tsx components/research/research-report.test.tsx
@@ -196,7 +196,7 @@ git commit -m "refactor: render final report in shared shell"
 - Modify: `components/research/streaming-report-draft.tsx`
 - Modify: `components/research/streaming-report-draft.test.tsx`
 
-- [ ] **Step 1: Add failing Draft surface and metadata assertions**
+- [x] **Step 1: Add failing Draft surface and metadata assertions**
 
 In the first `StreamingReportDraft` test, replace the article/status assertions with:
 
@@ -215,7 +215,7 @@ expect(screen.getByText("正在生成报告草稿").closest(".report-meta")).toB
 
 Keep the existing no-live-region and Streamdown-prop assertions unchanged.
 
-- [ ] **Step 2: Run the Draft test and verify RED**
+- [x] **Step 2: Run the Draft test and verify RED**
 
 Run:
 
@@ -225,7 +225,7 @@ npm test -- components/research/streaming-report-draft.test.tsx
 
 Expected: FAIL because Draft does not yet use the shared shell or render the eyebrow/meta row.
 
-- [ ] **Step 3: Implement the Draft shell and compact metadata row**
+- [x] **Step 3: Implement the Draft shell and compact metadata row**
 
 Add:
 
@@ -266,7 +266,7 @@ Replace the outer article and standalone status paragraph with:
 
 Keep the inert link, removed image, empty rehype plugin list, busy-state rule, and Streamdown configuration unchanged.
 
-- [ ] **Step 4: Run Draft and integration tests and verify GREEN**
+- [x] **Step 4: Run Draft and integration tests and verify GREEN**
 
 Run:
 
@@ -276,7 +276,7 @@ npm test -- components/research/streaming-report-draft.test.tsx components/resea
 
 Expected: all three files pass; existing cancellation, replacement, and scroll-follow behavior remains intact.
 
-- [ ] **Step 5: Commit the Draft migration**
+- [x] **Step 5: Commit the Draft migration**
 
 ```bash
 git add components/research/streaming-report-draft.tsx components/research/streaming-report-draft.test.tsx
@@ -289,7 +289,7 @@ git commit -m "feat: present streaming draft as final report"
 - Modify: `app/globals.css`
 - Modify: `app/workspace-layout.test.ts`
 
-- [ ] **Step 1: Write the failing CSS contract test**
+- [x] **Step 1: Write the failing CSS contract test**
 
 Add this test next to `keeps the streaming draft in the existing workspace scroll flow`:
 
@@ -311,7 +311,7 @@ it("uses the final report surface and heading hierarchy for the streaming draft"
 });
 ```
 
-- [ ] **Step 2: Run the CSS contract and verify RED**
+- [x] **Step 2: Run the CSS contract and verify RED**
 
 Run:
 
@@ -321,7 +321,7 @@ npm test -- app/workspace-layout.test.ts
 
 Expected: FAIL because `.streaming-report-draft` still owns duplicate surface dimensions and no `.report-meta` rule exists.
 
-- [ ] **Step 3: Replace duplicate Draft surface declarations with shared hierarchy**
+- [x] **Step 3: Replace duplicate Draft surface declarations with shared hierarchy**
 
 Keep `.research-report` as the only width/padding source and reduce the Draft rule to:
 
@@ -390,7 +390,7 @@ Add a narrow-screen metadata fallback inside `@media (max-width: 640px)`:
 .report-meta { align-items: flex-start; flex-direction: column; gap: 10px; }
 ```
 
-- [ ] **Step 4: Run CSS and renderer tests and verify GREEN**
+- [x] **Step 4: Run CSS and renderer tests and verify GREEN**
 
 Run:
 
@@ -400,7 +400,7 @@ npm test -- app/workspace-layout.test.ts components/research/report-shell.test.t
 
 Expected: all focused tests pass; CSS still exposes no nested vertical scroll owner.
 
-- [ ] **Step 5: Commit the visual parity styles**
+- [x] **Step 5: Commit the visual parity styles**
 
 ```bash
 git add app/globals.css app/workspace-layout.test.ts
@@ -459,11 +459,18 @@ git add docs/architecture.md docs/superpowers/plans/2026-07-16-unified-report-su
 git commit -m "docs: explain shared report surface"
 ```
 
+## Task 1–4 TDD execution evidence
+
+- Task 1: RED failed because `./report-shell` was missing; GREEN passed 1 file / 1 test. Initial implementation commit: `4586925`; children-coverage fix: `5f10c7d`.
+- Task 2: RED had 3 failing parameterized shell cases while the citation case passed; GREEN passed 2 files / 5 tests. Commit: `f11837f`.
+- Task 3: RED had 1 of 5 Draft tests fail on the missing shared classes; GREEN passed 3 files / 44 tests. Commit: `21b7f8b`.
+- Task 4: initial RED had 1 failed / 8 passed, then GREEN passed 6 files / 58 tests (`48c0e43`); the cascade regression reproduced RED at 1 / 8, then GREEN passed 6 / 58 (`cb4a25c`); metadata and test strengthening reproduced RED at 1 / 9, then GREEN passed 6 / 59 plus lint and typecheck (`cffffef`).
+
 ## Task 5 verification evidence (2026-07-16)
 
 - Automated verification: `npm test` exited 0 with 24/24 test files and 413/413 tests; `npm run lint`, `npm run typecheck`, and `git diff --check` each exited 0.
 - Build: the sandboxed `npm run build` failed only at Turbopack's internal `binding to a port: Operation not permitted (os error 1)` boundary. The approved outside-sandbox rerun exited 0: Next.js 16.2.10 compiled, typechecked, generated 5/5 static pages, and finalized `/`, `/_not-found`, and `/api/research`.
-- Current-source server: the worktree server reached ready state at `http://127.0.0.1:3217`. Because this worktree had no `.env.local`, the main checkout's existing `.env.local` was loaded into the server process without printing or copying its values.
+- Current-source server: the worktree server reached ready state at `http://127.0.0.1:3217`. Because this worktree had no `.env.local`, the main `.env.local` values were exported into the server process environment without printing them or copying the `.env.local` file into the worktree.
 - Browser limitation: the required in-app Browser returned `Browser is not available: iab`. After following its bootstrap troubleshooting, browser discovery exposed only Chrome; Chrome was not substituted for the explicitly required surface. Consequently no 1440 × 900, 900 × 800, or 600 × 800 viewport override was applied, no live provider request was sent, and no Browser console findings were available.
 - Desktop evidence boundary: live computed width, padding, border, background, Draft h1/h2 typography, two-measurement Draft growth, pre/post-final `scrollTop`, no-jump replacement, and final-only confidence/citation controls were not observed. Automated coverage confirms the Draft classes `research-report report-shell-draft streaming-report-draft`, `data-report-phase=draft`, `.report-meta` containment and flex/space-between rule, growing Markdown propagation, final `report-shell-final` / `data-report-phase=final`, and interactive known citations; these are not claimed as live visual evidence.
 - Narrow evidence boundary: the earlier 900 px stacking sentence was inconsistent with the approved 640 px metadata breakpoint and has been corrected. Automated CSS coverage confirms document scrolling below 960 px, no `overflow-y: auto|scroll` on the Draft shell/body, and column stacking with `align-items: flex-start` and a 10 px gap at or below 640 px. Neither the 900 × 800 scroll state nor the 600 × 800 stacked state was visually observed; automated coverage establishes their CSS contracts, not live geometry or horizontal-overflow behavior.
@@ -475,5 +482,5 @@ git commit -m "docs: explain shared report surface"
 - [x] Draft and final keep separate content/security renderers while sharing one presentation-only article.
 - [x] The Draft test preserves busy state, no live region, inert links, removed images, and Streamdown streaming behavior.
 - [x] CSS tests protect both visual parity and the existing single vertical scroll owner.
-- [x] Desktop and narrow Browser checks cover the visual behavior that JSDOM cannot calculate.
-- [x] Every production change follows a focused RED → GREEN cycle before the full verification run.
+- [x] The planned desktop and narrow Browser checks cover the visual behavior that JSDOM cannot calculate; Task 5 Steps 3–4 remain unexecuted because the required in-app Browser was unavailable.
+- [x] The Task 1–4 TDD execution evidence above records each focused RED → GREEN cycle before the full verification run.
