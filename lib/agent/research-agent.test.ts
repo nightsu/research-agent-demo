@@ -66,11 +66,15 @@ function model(overrides: Partial<ResearchModel> = {}): ResearchModel {
       gaps: [],
       followUpQueries: [],
     })),
-    generateReport: vi.fn(async (_question, sources) =>
-      sources[0]
+    generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => {
+      const report = sources[0]
         ? reportFor(sources[0].id)
-        : { ...reportFor("unused"), findings: [] },
-    ),
+        : { ...reportFor("unused"), findings: [] };
+      await options?.onPartialReport?.({ title: report.title });
+      await options?.onPartialReport?.(report);
+      await options?.onValidating?.();
+      return report;
+    }),
     ...overrides,
   };
   const withoutCallHook = (options: Parameters<ResearchModel["generatePlan"]>[1]) =>
@@ -144,10 +148,121 @@ describe("runResearch", () => {
       "source.evaluated",
       "conclusion.updated",
       "report.started",
+      "report.delta",
+      "report.delta",
+      "report.validating",
       "report.completed",
+    ]);
+    expect(events.filter((event) => event.type.startsWith("report."))).toEqual([
+      { type: "report.started", partial: false },
+      {
+        type: "report.delta",
+        sequence: 0,
+        mode: "append",
+        text: "# Bounded research agents",
+      },
+      {
+        type: "report.delta",
+        sequence: 1,
+        mode: "append",
+        text: expect.stringContaining("## Executive summary"),
+      },
+      { type: "report.validating" },
+      { type: "report.completed", report: reportFor("source-1") },
     ]);
     expect(state).toMatchObject({ phase: "completed", report: reportFor("source-1") });
     expect(state.sources[0]?.rawContent).toBe("Extracted content");
+  });
+
+  it("emits repairing after validation and the final draft delta", async () => {
+    const researchModel = model({
+      generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => {
+        const report = reportFor(sources[0]!.id);
+        await options?.onPartialReport?.({ title: report.title });
+        await options?.onValidating?.();
+        await options?.onRepairing?.();
+        return report;
+      }),
+    });
+    const { deps, events } = harness({ model: researchModel });
+
+    await runResearch(input, deps);
+
+    expect(events.filter((event) => event.type.startsWith("report.")).map((event) => event.type)).toEqual([
+      "report.started",
+      "report.delta",
+      "report.validating",
+      "report.repairing",
+      "report.completed",
+    ]);
+  });
+
+  it("does not emit late report updates after cancellation", async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    let lateCallbacksSettled!: () => void;
+    const lateCallbacks = new Promise<void>((resolve) => {
+      lateCallbacksSettled = resolve;
+    });
+    const researchModel = model({
+      generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => {
+        providerSignal = options?.abortSignal;
+        await options?.onPartialReport?.({ title: "Delivered draft" });
+        controller.abort(new DOMException("user stopped", "AbortError"));
+        await Promise.resolve();
+        await options?.onPartialReport?.({ title: "Late draft" }).catch(() => undefined);
+        await options?.onValidating?.().catch(() => undefined);
+        lateCallbacksSettled();
+        return reportFor(sources[0]!.id);
+      }),
+    });
+    const { deps, events } = harness({ model: researchModel });
+
+    const state = await runResearch(input, deps, controller.signal);
+    await lateCallbacks;
+
+    const cancellationIndex = events.findIndex((event) => event.type === "research.cancelled");
+    expect(state.phase).toBe("cancelled");
+    expect(providerSignal?.aborted).toBe(true);
+    expect(cancellationIndex).toBeGreaterThan(-1);
+    expect(events.slice(cancellationIndex + 1)).toEqual([]);
+    expect(events.filter((event) => [
+      "report.completed",
+      "research.partial",
+      "research.cancelled",
+      "research.failed",
+    ].includes(event.type))).toEqual([{ type: "research.cancelled" }]);
+  });
+
+  it("increments report sequence only after successful delta delivery", async () => {
+    const researchModel = model({
+      generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => {
+        await options?.onPartialReport?.({ title: "Undelivered draft" })
+          .catch(() => undefined);
+        await options?.onPartialReport?.({ title: "Delivered draft" });
+        await options?.onValidating?.();
+        return reportFor(sources[0]!.id);
+      }),
+    });
+    const events: ResearchEvent[] = [];
+    let rejectedFirstDelta = false;
+    const emit = vi.fn(async (event: ResearchEvent) => {
+      if (event.type === "report.delta" && !rejectedFirstDelta) {
+        rejectedFirstDelta = true;
+        throw new Error("draft delivery failed");
+      }
+      events.push(researchEventSchema.parse(event));
+    });
+    const { deps } = harness({ model: researchModel, emit });
+
+    await runResearch(input, deps);
+
+    expect(events.filter((event) => event.type === "report.delta")).toEqual([{
+      type: "report.delta",
+      sequence: 0,
+      mode: "append",
+      text: "# Delivered draft",
+    }]);
   });
 
   it("queues one unique gap follow-up and avoids duplicate planned queries", async () => {
@@ -218,7 +333,11 @@ describe("runResearch", () => {
       searchRoundLimit: 3,
     });
     const terminalIndex = events.findIndex((event) => event.type === "report.completed");
-    expect(events[terminalIndex - 1]).toEqual(metrics.at(-1));
+    const finalProgressIndex = events.findLastIndex(
+      (event) => event.type === "progress.updated",
+    );
+    expect(events[finalProgressIndex]).toEqual(metrics.at(-1));
+    expect(finalProgressIndex).toBeLessThan(terminalIndex);
   });
 
   it("continues the queued plan when assessment has no follow-up queries", async () => {
@@ -268,6 +387,15 @@ describe("runResearch", () => {
 
     expect(searchWeb).toHaveBeenCalledTimes(2);
     expect(events).toContainEqual({ type: "report.started", partial: true });
+    expect(events.filter((event) =>
+      event.type.startsWith("report.") || event.type === "research.partial"
+    ).map((event) => event.type)).toEqual([
+      "report.started",
+      "report.delta",
+      "report.delta",
+      "report.validating",
+      "research.partial",
+    ]);
     expect(events.at(-1)?.type).toBe("research.partial");
     expect(state).toMatchObject({ phase: "partial", report: expect.any(Object) });
   });

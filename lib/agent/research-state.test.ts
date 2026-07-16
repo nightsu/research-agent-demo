@@ -374,6 +374,66 @@ describe("research workflow state", () => {
     });
   });
 
+  it("keeps validation and repair transitions in synthesizing with new state snapshots", () => {
+    const evaluated = {
+      ...createResearchState("Compare Kimi and DeepSeek agents"),
+      phase: "evaluating" as const,
+      sourcesEvaluated: true,
+      evidenceAssessed: true,
+    };
+    const synthesizing = reduceResearchState(evaluated, {
+      type: "synthesis.started",
+      payload: {},
+    });
+    const validating = reduceResearchState(synthesizing, {
+      type: "synthesis.validating",
+      payload: {},
+    });
+    const repairing = reduceResearchState(validating, {
+      type: "synthesis.repairing",
+      payload: {},
+    });
+
+    expect(synthesizing).not.toBe(evaluated);
+    expect(validating).not.toBe(synthesizing);
+    expect(repairing).not.toBe(validating);
+    expect([synthesizing.phase, validating.phase, repairing.phase]).toEqual([
+      "synthesizing",
+      "synthesizing",
+      "synthesizing",
+    ]);
+    expect(repairing.stepCount).toBe(evaluated.stepCount + 3);
+  });
+
+  it("rejects validation and repair outside synthesis and after a terminal transition", () => {
+    const planning = createResearchState("Compare Kimi and DeepSeek agents");
+    const synthesizing = {
+      ...planning,
+      phase: "synthesizing" as const,
+    };
+    const completed = reduceResearchState(synthesizing, {
+      type: "report.completed",
+      payload: { report },
+    });
+
+    expect(reduceResearchState(planning, {
+      type: "synthesis.validating",
+      payload: {},
+    })).toBe(planning);
+    expect(reduceResearchState(planning, {
+      type: "synthesis.repairing",
+      payload: {},
+    })).toBe(planning);
+    expect(reduceResearchState(completed, {
+      type: "synthesis.validating",
+      payload: {},
+    })).toBe(completed);
+    expect(reduceResearchState(completed, {
+      type: "synthesis.repairing",
+      payload: {},
+    })).toBe(completed);
+  });
+
   it.each(["completed", "partial", "cancelled", "failed"] as const)(
     "keeps the %s phase unchanged after a later action",
     (phase) => {

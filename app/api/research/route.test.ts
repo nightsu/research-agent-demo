@@ -6,7 +6,10 @@ import {
   type ResearchEvent,
 } from "../../../lib/agent/research-events";
 import type { ResearchState } from "../../../lib/agent/research-state";
-import type { ResearchInput } from "../../../lib/agent/research-types";
+import type {
+  ResearchInput,
+  ResearchReport,
+} from "../../../lib/agent/research-types";
 import type { ResearchModel } from "../../../lib/providers/research-model";
 import {
   createResearchRoute,
@@ -15,6 +18,14 @@ import {
 import * as routeModule from "./route";
 
 const question = "研究型智能体如何可靠地流式返回阶段性结果？";
+const routeReport: ResearchReport = {
+  title: "流式研究报告",
+  executiveSummary: "报告更新必须遵守背压。",
+  findings: [],
+  trends: [],
+  disagreements: [],
+  limitations: [],
+};
 
 function emptyState(input: ResearchInput): ResearchState {
   return {
@@ -166,6 +177,31 @@ describe("POST /api/research", () => {
       type: "research.cancelled",
     });
     expect(end).toEqual({ done: true, value: undefined });
+  });
+
+  it("encodes a multilingual report delta with newlines as one NDJSON record", async () => {
+    const delta: ResearchEvent = {
+      type: "report.delta",
+      sequence: 0,
+      mode: "append",
+      text: "# 研究草稿\n\n第一条结论。",
+    };
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit(delta);
+        await dependencies.emit({ type: "research.cancelled" });
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+
+    const serialized = await (await post(jsonRequest({ question }))).text();
+    const records = serialized.split("\n").filter(Boolean);
+
+    expect(records).toHaveLength(2);
+    expect(decodeEventLine(`${records[0]}\n`)).toEqual(delta);
+    expect(records[0]).toContain("研究草稿");
+    expect(records[0]).toContain("\\n\\n");
   });
 
   it("links request aborts to the workflow signal", async () => {
@@ -341,8 +377,10 @@ describe("POST /api/research", () => {
         await dependencies.emit({ type: "research.cancelled" });
         try {
           await dependencies.emit({
-            type: "plan.started",
-            question: input.question,
+            type: "report.delta",
+            sequence: 0,
+            mode: "append",
+            text: "late draft",
           });
         } catch {
           rejectedAfterTerminal = true;
@@ -365,6 +403,42 @@ describe("POST /api/research", () => {
     expect(rejectedAfterTerminal).toBe(true);
     expect(events).toEqual([{ type: "research.cancelled" }]);
     expect(terminals).toHaveLength(1);
+  });
+
+  it("keeps report draft, validation, and repair events nonterminal", async () => {
+    let rejectedAfterCompleted = false;
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({ type: "report.started", partial: false });
+        await dependencies.emit({
+          type: "report.delta",
+          sequence: 0,
+          mode: "append",
+          text: "# Draft",
+        });
+        await dependencies.emit({ type: "report.validating" });
+        await dependencies.emit({ type: "report.repairing" });
+        await dependencies.emit({ type: "report.completed", report: routeReport });
+        try {
+          await dependencies.emit({ type: "report.validating" });
+        } catch {
+          rejectedAfterCompleted = true;
+        }
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+
+    const events = await readEvents(await post(jsonRequest({ question })));
+
+    expect(rejectedAfterCompleted).toBe(true);
+    expect(events.map((event) => event.type)).toEqual([
+      "report.started",
+      "report.delta",
+      "report.validating",
+      "report.repairing",
+      "report.completed",
+    ]);
   });
 
   it("holds a second emit until stream capacity is pulled", async () => {
@@ -404,6 +478,48 @@ describe("POST /api/research", () => {
       type: "research.cancelled",
     });
     expect(end.done).toBe(true);
+  });
+
+  it("applies consumer backpressure between consecutive report deltas", async () => {
+    const deliveredSequences: number[] = [];
+    let secondAttempted!: () => void;
+    const attempted = new Promise<void>((resolve) => {
+      secondAttempted = resolve;
+    });
+    const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
+      async (input, dependencies) => {
+        await dependencies.emit({
+          type: "report.delta",
+          sequence: 0,
+          mode: "append",
+          text: "first",
+        });
+        deliveredSequences.push(0);
+        secondAttempted();
+        await dependencies.emit({
+          type: "report.delta",
+          sequence: 1,
+          mode: "append",
+          text: " second",
+        });
+        deliveredSequences.push(1);
+        await dependencies.emit({ type: "research.cancelled" });
+        return emptyState(input);
+      },
+    );
+    const { post } = harness(run);
+    const response = await post(jsonRequest({ question }));
+
+    await attempted;
+    await Promise.resolve();
+    expect(deliveredSequences).toEqual([0]);
+
+    const reader = response.body!.getReader();
+    await reader.read();
+    await vi.waitFor(() => expect(deliveredSequences).toEqual([0, 1]));
+    await reader.read();
+    await reader.read();
+    expect((await reader.read()).done).toBe(true);
   });
 
   it("rejects a capacity-blocked emit when the consumer cancels", async () => {

@@ -48,6 +48,39 @@ async function readRemainingEvents(
 
 async function executeFixture(options: { deferPlan?: boolean } = {}) {
   const fixture = createResearchFlowFixture(options);
+  const generateReport = fixture.model.generateReport.bind(fixture.model);
+  fixture.model.generateReport = async (
+    question,
+    sources,
+    evaluations,
+    partial,
+    modelOptions,
+  ) => {
+    modelOptions?.onModelCall?.();
+    const reportOptions = modelOptions
+      ? { ...modelOptions, onModelCall: undefined }
+      : modelOptions;
+    await reportOptions?.onPartialReport?.({
+      title: "Kimi 与 DeepSeek Agent 工具调用开发对比",
+    });
+    await reportOptions?.onPartialReport?.({
+      title: "Kimi 与 DeepSeek Agent 工具调用开发对比",
+      executiveSummary: "两者都提供结构化工具调用。",
+      findings: [{
+        claim: "Kimi 与 DeepSeek 都提供官方工具调用协议。",
+        sourceIds: [...researchFlowAcceptedSourceIds],
+        confidence: "high",
+      }],
+    });
+    await reportOptions?.onValidating?.();
+    return generateReport(
+      question,
+      sources,
+      evaluations,
+      partial,
+      reportOptions,
+    );
+  };
   let terminalState: ResearchState | undefined;
   const post = createResearchRoute({
     createModel: () => fixture.model,
@@ -110,8 +143,17 @@ describe("POST /api/research complete workflow", () => {
     expect(eventTypes.filter((type) => type === "search.completed")).toHaveLength(2);
     expect(eventTypes).toContain("gap.detected");
     expect(eventTypes.filter((type) => type === "conclusion.updated")).toHaveLength(2);
+    expect(eventTypes.filter((type) => type === "report.started")).toHaveLength(1);
+    expect(eventTypes.filter((type) => type === "report.delta").length).toBeGreaterThanOrEqual(1);
+    expect(eventTypes.filter((type) => type === "report.validating")).toHaveLength(1);
     expect(terminalEvents).toHaveLength(1);
     expect(completed?.type).toBe("report.completed");
+    const reportDeltas = events.filter(
+      (event): event is Extract<ResearchEvent, { type: "report.delta" }> =>
+        event.type === "report.delta",
+    );
+    expect(reportDeltas.map((event) => event.sequence)).toEqual([0, 1]);
+    expect(reportDeltas.map((event) => event.text).join("")).toContain("[1] [3]");
 
     expect(firstRun.fixture.searchCalls).toEqual([
       { query: researchFlowInitialQuery, timeRange: "year" },

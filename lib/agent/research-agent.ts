@@ -15,6 +15,10 @@ import {
   type ResearchState,
 } from "./research-state";
 import {
+  createReportDraftUpdate,
+  reportDraftToMarkdown,
+} from "./report-draft";
+import {
   researchInputSchema,
   type ResearchInput,
   type Source,
@@ -118,6 +122,7 @@ export async function runResearch(
       if (signal?.aborted) onParentAbort();
       else signal?.addEventListener("abort", onParentAbort, { once: true });
     }
+    controller.signal.throwIfAborted();
     const timeout = new RequestTimeoutError(eventTimeoutMs);
     const timer = setTimeout(() => controller.abort(timeout), eventTimeoutMs);
     const aborted = new Promise<never>((_resolve, reject) => {
@@ -609,13 +614,48 @@ export async function runResearch(
       { type: "synthesis.started", payload: {} },
       [{ type: "report.started", partial }],
     );
+    const citationNumbers = new Map(
+      state.sources.map((source, index) => [source.id, index + 1]),
+    );
+    let previousMarkdown = "";
+    let sequence = 0;
     const report = await invokeModel((options) =>
       deps.model.generateReport(
         input.question,
         state.sources,
         state.evaluations,
         partial,
-        options,
+        {
+          ...options,
+          onPartialReport: async (partialReport) => {
+            const currentMarkdown = reportDraftToMarkdown(
+              partialReport,
+              citationNumbers,
+            );
+            const update = createReportDraftUpdate(
+              previousMarkdown,
+              currentMarkdown,
+            );
+            if (!update) return;
+
+            await emit({
+              type: "report.delta",
+              sequence,
+              ...update,
+            });
+            // 必须先确认 delivery 成功再递增 sequence；否则 emit 拒绝会制造客户端判定为协议错误的序列缺口。
+            sequence += 1;
+            previousMarkdown = currentMarkdown;
+          },
+          onValidating: () => transition(
+            { type: "synthesis.validating", payload: {} },
+            [{ type: "report.validating" }],
+          ),
+          onRepairing: () => transition(
+            { type: "synthesis.repairing", payload: {} },
+            [{ type: "report.repairing" }],
+          ),
+        },
       ),
     );
     if (signal?.aborted) return cancel();

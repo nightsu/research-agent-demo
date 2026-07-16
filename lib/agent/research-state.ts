@@ -42,6 +42,8 @@ export type ResearchAction =
     }
   | { type: "gap.detected"; payload: { gap: string } }
   | { type: "synthesis.started"; payload: Record<string, never> }
+  | { type: "synthesis.validating"; payload: Record<string, never> }
+  | { type: "synthesis.repairing"; payload: Record<string, never> }
   | { type: "report.completed"; payload: { report: ResearchReport } }
   | {
       type: "research.partial";
@@ -59,6 +61,8 @@ const nextPhaseByAction = {
   "evidence.assessed": "evaluating",
   "gap.detected": "searching",
   "synthesis.started": "synthesizing",
+  "synthesis.validating": "synthesizing",
+  "synthesis.repairing": "synthesizing",
   "report.completed": "completed",
   "research.partial": "partial",
   "research.cancelled": "cancelled",
@@ -81,7 +85,12 @@ const legalActionsByPhase = {
     "gap.detected",
     "synthesis.started",
   ],
-  synthesizing: ["report.completed", "research.partial"],
+  synthesizing: [
+    "synthesis.validating",
+    "synthesis.repairing",
+    "report.completed",
+    "research.partial",
+  ],
   completed: [],
   partial: [],
   cancelled: [],
@@ -274,6 +283,8 @@ export function reduceResearchState(
     case "search.started":
       return { ...nextState, activeQuery: action.payload.query };
     case "synthesis.started":
+    case "synthesis.validating":
+    case "synthesis.repairing":
       return nextState;
   }
 }
