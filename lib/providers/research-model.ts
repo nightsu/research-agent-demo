@@ -264,6 +264,10 @@ async function generateStreamingReport(
   options: ResearchReportModelOptions = {},
 ): Promise<ResearchReport> {
   const model = getResearchModel();
+  const streamAbortController = new AbortController();
+  const streamAbortSignal = options.abortSignal
+    ? AbortSignal.any([options.abortSignal, streamAbortController.signal])
+    : streamAbortController.signal;
 
   options.onModelCall?.();
   const result = streamText({
@@ -271,12 +275,25 @@ async function generateStreamingReport(
     system: RESEARCH_SYSTEM_PROMPT,
     prompt,
     output: Output.object({ schema: reportSchema }),
-    abortSignal: options.abortSignal,
+    abortSignal: streamAbortSignal,
     maxOutputTokens: 12_000,
   });
 
-  for await (const partial of result.partialOutputStream) {
-    await options.onPartialReport?.(partial);
+  try {
+    for await (const partial of result.partialOutputStream) {
+      await options.onPartialReport?.(partial);
+    }
+  } catch (streamError) {
+    streamAbortController.abort(streamError);
+
+    try {
+      // partial 分支提前退出后必须收走 tee 的 output 分支，否则 SDK 会继续缓冲；清理失败不能覆盖首个错误。
+      await result.output;
+    } catch {
+      // cleanup only
+    }
+
+    throw streamError;
   }
 
   await options.onValidating?.();

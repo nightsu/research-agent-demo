@@ -235,7 +235,12 @@ describe("structured research model", () => {
     const received: PartialResearchReport[] = [];
     streamText.mockReturnValueOnce({
       partialOutputStream: controlledAsyncIterable(partials, events),
-      output: Promise.resolve(report),
+      get output() {
+        events.push("output:read");
+        return Promise.resolve(report).finally(() => {
+          events.push("output:settle");
+        });
+      },
     });
     const onPartialReport = vi.fn(async (partial: PartialResearchReport) => {
       events.push(`callback:start:${partial.title}`);
@@ -270,6 +275,8 @@ describe("structured research model", () => {
       "callback:end:Streaming reports",
       "resume:1",
       "validating",
+      "output:read",
+      "output:settle",
     ]);
     expect(streamText).toHaveBeenCalledTimes(1);
     expect(generateText).not.toHaveBeenCalled();
@@ -299,13 +306,20 @@ describe("structured research model", () => {
     const onValidating = vi.fn();
     const onRepairing = vi.fn();
     const onModelCall = vi.fn();
+    const controller = new AbortController();
 
     const result = await createResearchModel().generateReport(
       question,
       sources,
       evaluations,
       false,
-      { onPartialReport, onValidating, onRepairing, onModelCall },
+      {
+        abortSignal: controller.signal,
+        onPartialReport,
+        onValidating,
+        onRepairing,
+        onModelCall,
+      },
     );
 
     expect(result).toEqual(report);
@@ -316,9 +330,146 @@ describe("structured research model", () => {
     expect(streamText).toHaveBeenCalledOnce();
     expect(generateText).toHaveBeenCalledOnce();
     expect(onModelCall).toHaveBeenCalledTimes(2);
-    expect(generateText.mock.calls[0][0].prompt).toContain(
+    const streamRequest = streamText.mock.calls[0][0];
+    const repairRequest = generateText.mock.calls[0][0];
+    expect(streamRequest.abortSignal).not.toBe(controller.signal);
+    expect(streamRequest.abortSignal.aborted).toBe(false);
+    expect(objectOutput).toHaveBeenCalledWith({ schema: reportSchema });
+    expect(streamRequest.output).toEqual({ kind: "object", schema: reportSchema });
+    expect(repairRequest).toMatchObject({
+      model: selectedModel,
+      system: RESEARCH_SYSTEM_PROMPT,
+      abortSignal: controller.signal,
+      maxOutputTokens: 12_000,
+    });
+    expect(repairRequest.prompt).toContain(
       "Repair instruction: the previous generation failed validation",
     );
+  });
+
+  it("aborts and settles the final output branch when a partial callback rejects", async () => {
+    const callbackError = new Error("partial callback failed");
+    const cleanupEvents: string[] = [];
+    let streamSignal: AbortSignal | undefined;
+    streamText.mockImplementationOnce((request) => {
+      streamSignal = request.abortSignal;
+
+      return {
+        partialOutputStream: controlledAsyncIterable([{ title: "Draft" }]),
+        get output() {
+          cleanupEvents.push("output:read");
+          return Promise.resolve(report).finally(() => {
+            cleanupEvents.push("output:settle");
+          });
+        },
+      };
+    });
+    const onRepairing = vi.fn();
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      {
+        onPartialReport: () => Promise.reject(callbackError),
+        onRepairing,
+      },
+    );
+
+    await expect(operation).rejects.toBe(callbackError);
+    expect(streamSignal?.aborted).toBe(true);
+    expect(streamSignal?.reason).toBe(callbackError);
+    expect(cleanupEvents).toEqual(["output:read", "output:settle"]);
+    expect(onRepairing).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("aborts and settles the final output branch when the partial iterator rejects", async () => {
+    const transportError = new Error("partial stream transport failed");
+    const cleanupEvents: string[] = [];
+    let streamSignal: AbortSignal | undefined;
+    streamText.mockImplementationOnce((request) => {
+      streamSignal = request.abortSignal;
+
+      return {
+        partialOutputStream: (async function* () {
+          throw transportError;
+        })(),
+        get output() {
+          cleanupEvents.push("output:read");
+          return Promise.reject(new Error("cleanup failed")).finally(() => {
+            cleanupEvents.push("output:settle");
+          });
+        },
+      };
+    });
+    const onRepairing = vi.fn();
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { onRepairing },
+    );
+
+    await expect(operation).rejects.toBe(transportError);
+    expect(streamSignal?.aborted).toBe(true);
+    expect(streamSignal?.reason).toBe(transportError);
+    expect(cleanupEvents).toEqual(["output:read", "output:settle"]);
+    expect(onRepairing).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
+  });
+
+  it("links caller cancellation to the initial stream and settles its final output", async () => {
+    const callerAbort = new DOMException("caller aborted", "AbortError");
+    const controller = new AbortController();
+    const cleanupEvents: string[] = [];
+    let streamSignal: AbortSignal | undefined;
+    streamText.mockImplementationOnce((request) => {
+      streamSignal = request.abortSignal;
+
+      return {
+        partialOutputStream: (async function* () {
+          await new Promise<void>((_resolve, reject) => {
+            if (request.abortSignal.aborted) {
+              reject(request.abortSignal.reason);
+              return;
+            }
+            request.abortSignal.addEventListener(
+              "abort",
+              () => reject(request.abortSignal.reason),
+              { once: true },
+            );
+          });
+        })(),
+        get output() {
+          cleanupEvents.push("output:read");
+          return Promise.resolve(report).finally(() => {
+            cleanupEvents.push("output:settle");
+          });
+        },
+      };
+    });
+    const onRepairing = vi.fn();
+
+    const operation = createResearchModel().generateReport(
+      question,
+      sources,
+      evaluations,
+      false,
+      { abortSignal: controller.signal, onRepairing },
+    );
+    controller.abort(callerAbort);
+
+    await expect(operation).rejects.toBe(callerAbort);
+    expect(streamSignal).not.toBe(controller.signal);
+    expect(streamSignal?.aborted).toBe(true);
+    expect(streamSignal?.reason).toBe(callerAbort);
+    expect(cleanupEvents).toEqual(["output:read", "output:settle"]);
+    expect(onRepairing).not.toHaveBeenCalled();
+    expect(generateText).not.toHaveBeenCalled();
   });
 
   it.each([
