@@ -68,6 +68,21 @@ button:focus-visible, a:focus-visible, textarea:focus-visible, select:focus-visi
   background: var(--surface);
   box-shadow: var(--shadow);
 }
+
+.plan-review-shell { display: grid; gap: 24px; padding-top: 48px; padding-bottom: 64px; }
+.plan-review-hero { margin-bottom: 0; }
+.plan-review-brief { padding: 24px; border: 1px solid var(--line); border-radius: 20px; background: var(--surface); box-shadow: var(--shadow); }
+.plan-review-metadata { display: grid; gap: 14px; margin: 0; }
+.plan-review-metadata div { display: grid; grid-template-columns: minmax(110px, 0.25fr) 1fr; gap: 16px; }
+.plan-review-metadata dt { color: var(--ink-muted); font-size: 0.78rem; font-weight: 750; text-transform: uppercase; letter-spacing: 0.08em; }
+.plan-review-metadata dd { margin: 0; }
+.plan-review-form { display: grid; gap: 18px; }
+.plan-review-list { display: grid; gap: 14px; margin: 0; padding: 0; border: 0; }
+.plan-review-list legend { margin-bottom: 12px; font-weight: 800; }
+.plan-review-list-item { display: grid; gap: 6px; }
+.plan-review-list-item .text-button { justify-self: start; }
+.plan-review-list textarea { width: 100%; min-height: 76px; }
+.plan-review-actions { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: stretch; }
 .form-heading, .section-heading, .workspace-header, .source-card-header {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
 }

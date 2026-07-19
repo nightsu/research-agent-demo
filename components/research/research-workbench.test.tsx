@@ -2,7 +2,12 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ResearchEvent } from "@/lib/agent/research-events";
-import type { ResearchReport, Source } from "@/lib/agent/research-types";
+import type {
+  ResearchInput,
+  ResearchPlan,
+  ResearchReport,
+  Source,
+} from "@/lib/agent/research-types";
 
 import { ResearchForm } from "./research-form";
 import { ResearchProgress } from "./research-progress";
@@ -81,16 +86,20 @@ const completedEvents: ResearchEvent[] = [
 ];
 
 const start = vi.fn();
+const approvePlan = vi.fn();
 const cancel = vi.fn();
 const reset = vi.fn();
 const retry = vi.fn();
 let mockedRun: {
-  status: "idle" | "running" | "completed" | "partial" | "cancelled" | "failed";
+  status: "idle" | "running" | "awaiting-review" | "completed" | "partial" | "cancelled" | "failed";
   events: ResearchEvent[];
   reportDraft?: ReportDraftState;
   hadReportDraft?: boolean;
   error?: string;
 };
+let mockedPlanReview:
+  | { input: ResearchInput; plan: ResearchPlan }
+  | undefined;
 
 function defineWorkspaceScroll(viewport: HTMLElement, scrollTop = 690) {
   const scrollTo = vi.fn();
@@ -172,12 +181,23 @@ function defineDocumentScrollMetrics(scrollTop = 700) {
 }
 
 vi.mock("./use-research-stream", () => ({
-  useResearchStream: () => ({ run: mockedRun, start, cancel, reset, retry, canRetry: true }),
+  useResearchStream: () => ({
+    run: mockedRun,
+    planReview: mockedPlanReview,
+    start,
+    approvePlan,
+    cancel,
+    reset,
+    retry,
+    canRetry: true,
+  }),
 }));
 
 beforeEach(() => {
   mockedRun = { status: "idle", events: [] };
+  mockedPlanReview = undefined;
   start.mockReset();
+  approvePlan.mockReset();
   cancel.mockReset();
   reset.mockReset();
   retry.mockReset();
@@ -363,6 +383,64 @@ describe("observable research views", () => {
 });
 
 describe("ResearchWorkbench", () => {
+  it("reviews and revises every plan field while keeping the original input locked", () => {
+    const reviewInput: ResearchInput = {
+      question: "What changed in browser rendering this year?",
+      timeRange: "year",
+      depth: "quick",
+    };
+    const reviewPlan: ResearchPlan = {
+      objective: "Identify meaningful browser rendering changes",
+      subquestions: ["What shipped?"],
+      searchQueries: ["browser rendering changes 2026"],
+    };
+    mockedRun = {
+      status: "awaiting-review",
+      events: [
+        { type: "plan.completed", plan: reviewPlan },
+        { type: "plan.awaiting_approval" },
+      ],
+    };
+    mockedPlanReview = {
+      input: reviewInput,
+      plan: reviewPlan,
+    };
+    render(<ResearchWorkbench />);
+
+    expect(screen.getByText(mockedPlanReview.input.question)).toBeInTheDocument();
+    expect(screen.getByText(/past year/i)).toBeInTheDocument();
+    expect(screen.getByText(/quick scan/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/research objective/i), {
+      target: { value: "Compare rendering changes" },
+    });
+    fireEvent.change(screen.getByLabelText(/subquestion 1/i), {
+      target: { value: "Which changes matter?" },
+    });
+    fireEvent.change(screen.getByLabelText(/search query 1/i), {
+      target: { value: "important rendering changes 2026" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add subquestion/i }));
+    fireEvent.change(screen.getByLabelText(/subquestion 2/i), {
+      target: { value: "Who is affected?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add search query/i }));
+    fireEvent.change(screen.getByLabelText(/search query 2/i), {
+      target: { value: "rendering change impact 2026" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /approve and research/i }));
+
+    expect(approvePlan).toHaveBeenCalledWith({
+      objective: "Compare rendering changes",
+      subquestions: ["Which changes matter?", "Who is affected?"],
+      searchQueries: [
+        "important rendering changes 2026",
+        "rendering change impact 2026",
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /discard plan/i }));
+    expect(reset).toHaveBeenCalledOnce();
+  });
+
   it("starts from the form and exposes a stop action while running", () => {
     const { rerender } = render(<ResearchWorkbench />);
     fireEvent.change(screen.getByLabelText(/research question/i), {

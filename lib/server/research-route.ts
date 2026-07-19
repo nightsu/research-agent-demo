@@ -1,8 +1,8 @@
-import { runResearch } from "../agent/research-agent";
+import { proposeResearchPlan, runResearch } from "../agent/research-agent";
 import { encodeEvent, type ResearchEvent } from "../agent/research-events";
 import {
-  researchInputSchema,
-  type ResearchInput,
+  researchOperationRequestSchema,
+  type ResearchOperationRequest,
 } from "../agent/research-types";
 import type { ResearchModel } from "../providers/research-model";
 import { extractSources, searchWeb } from "../tools/tavily";
@@ -20,6 +20,7 @@ const FALLBACK_FAILURE: ResearchEvent = {
 };
 
 const terminalEventTypes = new Set<ResearchEvent["type"]>([
+  "plan.awaiting_approval",
   "report.completed",
   "research.partial",
   "research.cancelled",
@@ -39,15 +40,15 @@ function safeJsonError(error: string, status: number): Response {
 
 export function createResearchRoute(dependencies: ResearchRouteDependencies) {
   return async function POST(request: Request): Promise<Response> {
-    let input: ResearchInput;
+    let operation: ResearchOperationRequest;
 
     try {
       const body: unknown = await request.json();
-      const parsed = researchInputSchema.safeParse(body);
-      if (!parsed.success) {
+      const parsedOperation = researchOperationRequestSchema.safeParse(body);
+      if (!parsedOperation.success) {
         return safeJsonError("研究问题格式无效，请检查后重试。", 400);
       }
-      input = parsed.data;
+      operation = parsedOperation.data;
     } catch {
       return safeJsonError("请求内容不是有效的 JSON。", 400);
     }
@@ -153,17 +154,25 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
           }
         };
 
-        void dependencies
-          .runResearch(
-            input,
-            {
-              model,
-              searchWeb: dependencies.searchWeb,
-              extractSources: dependencies.extractSources,
-              emit,
-            },
-            workflowController.signal,
-          )
+        const workflow = operation.action === "plan"
+          ? proposeResearchPlan(
+              operation.input,
+              { model, emit },
+              workflowController.signal,
+            )
+          : dependencies.runResearch(
+              operation.input,
+              {
+                model,
+                approvedPlan: operation.plan,
+                searchWeb: dependencies.searchWeb,
+                extractSources: dependencies.extractSources,
+                emit,
+              },
+              workflowController.signal,
+            );
+
+        void workflow
           .then(ensureTerminal, ensureTerminal)
           .finally(() => {
             cleanup();

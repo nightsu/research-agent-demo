@@ -16,7 +16,11 @@ import type {
 } from "./research-types";
 import type { ResearchModel } from "../providers/research-model";
 import { TavilyError } from "../tools/tavily";
-import { runResearch, type ResearchDependencies } from "./research-agent";
+import {
+  proposeResearchPlan,
+  runResearch,
+  type ResearchDependencies,
+} from "./research-agent";
 
 const input: ResearchInput = {
   question: "How do bounded research agents work?",
@@ -115,6 +119,7 @@ function harness(overrides: Partial<ResearchDependencies> = {}) {
   const events: ResearchEvent[] = [];
   const deps: ResearchDependencies = {
     model: model(),
+    approvedPlan: plan(),
     searchWeb: vi.fn(async () => [source("source-1")]),
     extractSources: vi.fn(async (urls) => new Map([[urls[0]!, "Extracted content"]])),
     emit: vi.fn(async (event) => {
@@ -133,15 +138,50 @@ describe("research limits", () => {
   });
 });
 
+describe("proposeResearchPlan", () => {
+  it("stops at the approval boundary after emitting a validated plan", async () => {
+    const events: ResearchEvent[] = [];
+    const researchModel = model();
+
+    const result = await proposeResearchPlan(input, {
+      model: researchModel,
+      emit: async (event) => {
+        events.push(researchEventSchema.parse(event));
+      },
+    });
+
+    expect(result).toEqual(plan());
+    expect(researchModel.generatePlan).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      { type: "plan.started", question: input.question },
+      { type: "plan.completed", plan: plan() },
+      { type: "plan.awaiting_approval" },
+    ]);
+  });
+});
+
 describe("runResearch", () => {
+  it("rejects a missing Approved Plan before any external research", async () => {
+    const { deps, events } = harness({
+      approvedPlan: undefined as unknown as ResearchPlan,
+    });
+
+    await expect(runResearch(input, deps)).rejects.toThrow();
+
+    expect(deps.model.generatePlan).not.toHaveBeenCalled();
+    expect(deps.searchWeb).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
+      type: "research.failed",
+      recoverable: false,
+    });
+  });
+
   it("emits the explicit happy-path checkpoints and completes with a report", async () => {
     const { deps, events } = harness();
 
     const state = await runResearch(input, deps);
 
     expect(events.filter((event) => event.type !== "progress.updated").map((event) => event.type)).toEqual([
-      "plan.started",
-      "plan.completed",
       "search.started",
       "search.completed",
       "source.read",
@@ -320,12 +360,12 @@ describe("runResearch", () => {
         followUpQueries: [],
       });
     const researchModel = model({
-      generatePlan: vi.fn(async () => plan(["planned query", "planned query"])),
       assessEvidence,
     });
     const searchWeb = vi.fn(async (query: string) => [source(`source-${query.replaceAll(" ", "-")}`)]);
     const { deps, events } = harness({
       model: researchModel,
+      approvedPlan: plan(["planned query", "planned query"]),
       searchWeb,
       limits: { maxSteps: 12, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
     });
@@ -344,7 +384,6 @@ describe("runResearch", () => {
 
   it("emits actual operation and search-round metrics throughout a two-round flow", async () => {
     const researchModel = model({
-      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
       assessEvidence: vi
         .fn<ResearchModel["assessEvidence"]>()
         .mockResolvedValueOnce({ sufficient: false, summary: "More needed.", gaps: [], followUpQueries: [] })
@@ -352,6 +391,7 @@ describe("runResearch", () => {
     });
     const { deps, events } = harness({
       model: researchModel,
+      approvedPlan: plan(["first query", "second query"]),
       searchWeb: vi.fn(async (query: string) => [source(`source-${query[0]}`)]),
       limits: { maxSteps: 12, maxSearchRounds: 3, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
     });
@@ -366,7 +406,7 @@ describe("runResearch", () => {
     expect(metrics.some((event) => event.searchRounds === 2)).toBe(true);
     expect(metrics.at(-1)).toEqual({
       type: "progress.updated",
-      operationCount: 10,
+      operationCount: 9,
       operationLimit: 12,
       searchRounds: 2,
       searchRoundLimit: 3,
@@ -381,7 +421,6 @@ describe("runResearch", () => {
 
   it("continues the queued plan when assessment has no follow-up queries", async () => {
     const researchModel = model({
-      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
       assessEvidence: vi
         .fn<ResearchModel["assessEvidence"]>()
         .mockResolvedValueOnce({
@@ -395,6 +434,7 @@ describe("runResearch", () => {
     const searchWeb = vi.fn(async (query: string) => [source(`source-${query[0]}`)]);
     const { deps, events } = harness({
       model: researchModel,
+      approvedPlan: plan(["first query", "second query"]),
       searchWeb,
       limits: { maxSteps: 12, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
     });
@@ -452,7 +492,7 @@ describe("runResearch", () => {
     const { deps, events } = harness({
       model: researchModel,
       searchWeb,
-      limits: { maxSteps: 7, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
+      limits: { maxSteps: 6, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 12, requestTimeoutMs: 30_000 },
     });
 
     const state = await runResearch(input, deps);
@@ -485,7 +525,6 @@ describe("runResearch", () => {
       .mockResolvedValueOnce([source("source-1")])
       .mockRejectedValueOnce(new TavilyError("second temporary", { recoverable: true }));
     const researchModel = model({
-      generatePlan: vi.fn(async () => plan(["first query", "second query"])),
       assessEvidence: vi
         .fn<ResearchModel["assessEvidence"]>()
         .mockResolvedValueOnce({
@@ -497,6 +536,7 @@ describe("runResearch", () => {
     });
     const { deps, events } = harness({
       model: researchModel,
+      approvedPlan: plan(["first query", "second query"]),
       searchWeb,
       limits: { maxSteps: 20, maxSearchRounds: 5, maxResultsPerRound: 6, maxSourcesToRead: 0, requestTimeoutMs: 30_000 },
     });
@@ -806,7 +846,7 @@ describe("runResearch", () => {
 
     const state = await runResearch(input, deps);
 
-    expect(deps.model.generatePlan).toHaveBeenCalledTimes(1);
+    expect(deps.model.generatePlan).not.toHaveBeenCalled();
     expect(deps.searchWeb).not.toHaveBeenCalled();
     expect(state.phase).toBe("partial");
   });
@@ -814,7 +854,7 @@ describe("runResearch", () => {
   it("sanitizes dependency failures while rejecting the original error", async () => {
     const secret = "SECRET_API_KEY raw provider request payload";
     const error = new Error(secret);
-    const researchModel = model({ generatePlan: vi.fn(async () => { throw error; }) });
+    const researchModel = model({ evaluateSources: vi.fn(async () => { throw error; }) });
     const { deps, events } = harness({ model: researchModel });
 
     await expect(runResearch(input, deps)).rejects.toBe(error);
@@ -925,7 +965,7 @@ describe("runResearch", () => {
 
   it("emits a nonempty fallback message and preserves an empty-message error", async () => {
     const error = new Error();
-    const researchModel = model({ generatePlan: vi.fn(async () => { throw error; }) });
+    const researchModel = model({ evaluateSources: vi.fn(async () => { throw error; }) });
     const { deps, events } = harness({ model: researchModel });
 
     await expect(runResearch(input, deps)).rejects.toBe(error);
@@ -984,7 +1024,6 @@ describe("runResearch", () => {
   it("passes abort signals to every dependency call", async () => {
     const seenSignals: AbortSignal[] = [];
     const researchModel = model({
-      generatePlan: vi.fn(async (_question, options) => { seenSignals.push(options!.abortSignal!); return plan(); }),
       evaluateSources: vi.fn(async (_question, sources, options) => { seenSignals.push(options!.abortSignal!); return sources.map((item: Source) => evaluation(item.id)); }),
       assessEvidence: vi.fn(async (_question, _sources, _evaluations, options) => { seenSignals.push(options!.abortSignal!); return { sufficient: true, summary: "Enough.", gaps: [], followUpQueries: [] }; }),
       generateReport: vi.fn(async (_question, sources, _evaluations, _partial, options) => { seenSignals.push(options!.abortSignal!); return reportFor(sources[0]!.id); }),
@@ -995,22 +1034,19 @@ describe("runResearch", () => {
 
     await runResearch(input, deps);
 
-    expect(seenSignals).toHaveLength(6);
+    expect(seenSignals).toHaveLength(5);
     expect(seenSignals.every((signal) => signal instanceof AbortSignal)).toBe(true);
   });
 
-  it("counts a model repair callback as another operation step", async () => {
+  it("counts an execution model repair callback as another operation step", async () => {
     const emptyReport: ResearchReport = {
       ...reportFor("unused"),
       findings: [],
     };
     const repairAwareModel: ResearchModel = {
-      generatePlan: vi.fn(async (_question, options) => {
-        options?.onModelCall?.();
-        options?.onModelCall?.();
-        return plan();
-      }),
+      generatePlan: vi.fn(async () => plan()),
       evaluateSources: vi.fn(async (_question, sources, options) => {
+        options?.onModelCall?.();
         options?.onModelCall?.();
         return sources.map((item: Source) => evaluation(item.id));
       }),
@@ -1033,11 +1069,11 @@ describe("runResearch", () => {
     expect(deps.searchWeb).toHaveBeenCalledTimes(1);
     expect(deps.extractSources).not.toHaveBeenCalled();
     expect(state.phase).toBe("partial");
-    const planMetrics = events.filter(
+    const executionMetrics = events.filter(
       (event): event is Extract<ResearchEvent, { type: "progress.updated" }> =>
-        event.type === "progress.updated" && event.searchRounds === 0,
+        event.type === "progress.updated",
     );
-    expect(planMetrics.slice(0, 2).map((event) => event.operationCount)).toEqual([1, 2]);
+    expect(executionMetrics.map((event) => event.operationCount)).toContain(2);
   });
 
   it("reserves two report calls and returns partial under a tight repair budget", async () => {
@@ -1099,9 +1135,9 @@ describe("runResearch", () => {
   it("aborts a timed-out request and classifies the failure as recoverable", async () => {
     let receivedSignal: AbortSignal | undefined;
     const researchModel = model({
-      generatePlan: vi.fn((_question, options) => {
+      evaluateSources: vi.fn((_question, _sources, options) => {
         receivedSignal = options?.abortSignal;
-        return new Promise<ResearchPlan>((_resolve, reject) => {
+        return new Promise<SourceEvaluation[]>((_resolve, reject) => {
           options?.abortSignal?.addEventListener(
             "abort",
             () => reject(options.abortSignal?.reason),
@@ -1124,7 +1160,7 @@ describe("runResearch", () => {
   it("times out a pending event delivery and emits a sanitized failure", async () => {
     const events: ResearchEvent[] = [];
     const emit = vi.fn((event: ResearchEvent) => {
-      if (event.type === "plan.started") return new Promise<void>(() => {});
+      if (event.type === "search.started") return new Promise<void>(() => {});
       events.push(researchEventSchema.parse(event));
     });
     const { deps } = harness({

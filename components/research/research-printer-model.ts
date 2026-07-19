@@ -89,6 +89,7 @@ export function derivePrinterRecords(events: ResearchEvent[]): PrinterRecord[] {
         records.push({ id: `terminal-${index}`, kind: "terminal", outcome: "failed", message: event.message, recoverable: event.recoverable });
         break;
       case "progress.updated":
+      case "plan.awaiting_approval":
       case "report.delta":
         break;
     }

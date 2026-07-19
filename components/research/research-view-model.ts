@@ -46,6 +46,7 @@ export function eventStatusLabel(event?: ResearchEvent): string {
     case "plan.started": return "Planning started";
     case "progress.updated": return "Workflow progress updated";
     case "plan.completed": return "Plan completed";
+    case "plan.awaiting_approval": return "Plan awaiting approval";
     case "search.started": return "Search running";
     case "search.completed": return "Search completed";
     case "source.read": return "Source read";
@@ -66,6 +67,7 @@ export function eventStatusLabel(event?: ResearchEvent): string {
 export const runStatusLabel: Record<ResearchRunStatus, string> = {
   idle: "Ready to research",
   running: "Research running",
+  "awaiting-review": "Plan awaiting review",
   completed: "Research completed",
   partial: "Partial report available",
   cancelled: "Research cancelled",
@@ -77,6 +79,7 @@ function phaseForLatestEvent(event?: ResearchEvent): WorkflowPhase | undefined {
   switch (event.type) {
     case "plan.started": return "planning";
     case "progress.updated": return undefined;
+    case "plan.awaiting_approval": return "planning";
     case "plan.completed":
     case "search.started":
     case "gap.detected": return "searching";

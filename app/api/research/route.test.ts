@@ -8,6 +8,7 @@ import {
 import type { ResearchState } from "../../../lib/agent/research-state";
 import type {
   ResearchInput,
+  ResearchPlan,
   ResearchReport,
 } from "../../../lib/agent/research-types";
 import type { ResearchModel } from "../../../lib/providers/research-model";
@@ -25,6 +26,11 @@ const routeReport: ResearchReport = {
   trends: [],
   disagreements: [],
   limitations: [],
+};
+const approvedPlan: ResearchPlan = {
+  objective: "验证研究流的阶段性结果",
+  subquestions: ["事件是否遵守协议？"],
+  searchQueries: ["research stream protocol"],
 };
 
 function emptyState(input: ResearchInput): ResearchState {
@@ -69,7 +75,11 @@ function request(body: string, signal?: AbortSignal) {
 }
 
 function jsonRequest(body: unknown, signal?: AbortSignal) {
-  return request(JSON.stringify(body), signal);
+  return request(JSON.stringify({
+    action: "execute",
+    input: body,
+    plan: approvedPlan,
+  }), signal);
 }
 
 async function readEvents(response: Response): Promise<ResearchEvent[]> {
@@ -98,6 +108,16 @@ describe("POST /api/research", () => {
     expect(payload).toEqual({ error: expect.any(String) });
     expect(payload.error).toMatch(/[\u3400-\u9fff]/u);
     expect(payload.error.length).toBeLessThanOrEqual(120);
+    expect(dependencies.createModel).not.toHaveBeenCalled();
+    expect(dependencies.runResearch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a legacy bare research input that has not passed Plan Review", async () => {
+    const { dependencies, post } = harness();
+
+    const response = await post(request(JSON.stringify({ question })));
+
+    expect(response.status).toBe(400);
     expect(dependencies.createModel).not.toHaveBeenCalled();
     expect(dependencies.runResearch).not.toHaveBeenCalled();
   });

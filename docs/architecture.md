@@ -7,6 +7,7 @@
 | 组件 | 主要文件 | 职责 |
 | --- | --- | --- |
 | UI 工作台 | `components/research/research-workbench.tsx` | 发起 / 取消 / 重试研究，并按运行终态组合进度、打印流、报告与来源抽屉 |
+| 计划审核 | `components/research/research-plan-review.tsx` | 锁定原始 brief，校验用户对计划目标、子问题和搜索词的修订，并提交 Approved Plan |
 | 流客户端 | `components/research/use-research-stream.ts` | POST 请求、任意字节分块解码、事件校验、终态和取消 |
 | UI 投影 | `components/research/research-view-model.ts` | 从事件日志去重来源、关联评估、编号引用并派生展示状态 |
 | 打印投影 | `components/research/research-printer-model.ts` | 把追加事件日志聚合为计划、搜索批次、缺口、结论与综合记录 |
@@ -61,7 +62,7 @@ flowchart TB
     Tavily -- HTTPS --> Web[("Tavily Search / Extract")]
 ```
 
-模型与 Tavily 没有直接连线。模型提出计划、评价和跟进查询；只有 `runResearch` 能把经过 schema 和预算约束的数据交给 `searchWeb` / `extractSources`，而凭据只存在于服务端适配器。
+模型与 Tavily 没有直接连线。`proposeResearchPlan` 只生成计划；Plan Review 批准后，只有 `runResearch` 能把经过 schema 和预算约束的数据交给 `searchWeb` / `extractSources`，而凭据只存在于服务端适配器。
 
 ## 请求时序
 
@@ -72,6 +73,7 @@ sequenceDiagram
     participant W as app route module
     participant F as createResearchRoute
     participant R as generated POST handler
+    participant P as proposeResearchPlan
     participant A as runResearch
     participant M as ResearchModel / Provider
     participant T as Tavily
@@ -79,16 +81,21 @@ sequenceDiagram
     Note over W,R: module initialization
     W->>F: createResearchRoute(production deps)
     F-->>W: POST handler
-    Note over U,R: request runtime
+    Note over U,R: plan request
     U->>H: submit(question, depth, timeRange)
-    H->>R: POST /api/research + AbortSignal
-    R->>A: runResearch(input, deps, signal)
-    A-->>R: plan.started
+    H->>R: POST action=plan + AbortSignal
+    R->>P: proposeResearchPlan(input)
+    P-->>R: plan.started
     R-->>H: typed NDJSON event
-    A->>M: generatePlan()
-    M-->>A: ResearchPlan
-    A-->>R: plan.completed
+    P->>M: generatePlan()
+    M-->>P: ResearchPlan
+    P-->>R: plan.completed + plan.awaiting_approval
     R-->>H: typed NDJSON event
+    H-->>U: Plan Review
+    U->>H: revise and approve plan
+    Note over U,R: execution request
+    H->>R: POST action=execute + Approved Plan
+    R->>A: runResearch(input, approvedPlan, deps, signal)
     loop until sufficient or bounded
       A-->>R: search.started
       R-->>H: typed NDJSON event
@@ -136,7 +143,7 @@ sequenceDiagram
     R-->>H: typed NDJSON terminal event
 ```
 
-图中从 `createResearchRoute()` handler 发出的每个箭头实际上都是 Zod 校验后的一行 NDJSON。`app/api/research/route.ts` 不实现协议，只把生产依赖传给 factory 并暴露 Next.js 允许的 route exports。客户端不能假设网络 chunk 等于一条事件，因此 `useResearchStream` 先用 `TextDecoder` 累积字节，再按换行切分和调用 `decodeEventLine`。
+图中从 `createResearchRoute()` handler 发出的每个箭头实际上都是 Zod 校验后的一行 NDJSON。计划流以 `plan.awaiting_approval` 结束，执行流以报告、部分报告、取消或失败结束；客户端在两条流之间保留原始输入和经过审核的计划。`app/api/research/route.ts` 不实现协议，只把生产依赖传给 factory 并暴露 Next.js 允许的 route exports。客户端不能假设网络 chunk 等于一条事件，因此 `useResearchStream` 先用 `TextDecoder` 累积字节，再按换行切分和调用 `decodeEventLine`。
 
 ## 真实报告流
 
@@ -182,7 +189,7 @@ partial structured output 通常只增长，但这不是协议保证。若新 Ma
 
 partial stream 结束后先发 `report.validating`。只有最终结构化输出属于可修复错误时才发 `report.repairing`，并最多进行一次隐藏的非流式修复；第二次尝试不回放 delta，避免清空或反驳用户正在阅读的第一版草稿。鉴权、限流、网络、取消和 callback 错误不伪装成格式修复。修复也失败、网络中断或用户取消时，已有草稿保留为 `incomplete`。
 
-`createResearchRoute()` 继续承担唯一终态与 `ReadableStream.desiredSize` 背压：每个回调必须等上一条 NDJSON 获得容量才能继续。`report.delta` 不是终态；`report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 仍然只能出现一个。
+`createResearchRoute()` 继续承担每个请求的唯一终态与 `ReadableStream.desiredSize` 背压：每个回调必须等上一条 NDJSON 获得容量才能继续。计划请求以 `plan.awaiting_approval` 终止；执行请求只能以 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一终止。`report.delta` 不是终态。
 
 ### 客户端：持久事实与瞬态草稿分离
 
@@ -255,7 +262,7 @@ partial stream 结束后先发 `report.validating`。只有最终结构化输出
 
 ## 操作预算与修复回调
 
-`limits.ts` 同时限制总 operations、搜索轮次、每轮结果、正文读取数和单次超时。operation 不是 UI event 数，而是有成本或风险的外部 / 模型调用：
+`limits.ts` 同时限制 Approved Plan 执行阶段的总 operations、搜索轮次、每轮结果、正文读取数和单次超时。计划生成位于独立请求中，不消耗这段执行预算。operation 不是 UI event 数，而是有成本或风险的外部 / 模型调用：
 
 - 每次 `invoke()` 在调用模型、Search 或 Extract 前计数；
 - `invokeModel()` 把 `onModelCall` 传到 provider；一次正常结构化生成占 1 个 operation；
@@ -288,13 +295,13 @@ plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonC
 
 ## 取消、背压与终态
 
-客户端每次 start 都取消前一请求并使用 generation ID 忽略过期事件；显式 cancel 会终止 fetch。`lib/server/research-route.ts` 中由 `createResearchRoute()` 创建的 handler 把 `request.signal` 传播到 workflow controller，`runResearch` 再为每个模型 / Tavily operation 创建有超时的子 signal。ReadableStream consumer 主动取消时，handler 的 `cancel()` 同样中止 workflow controller。
+客户端每次 start、批准或重试都会取消前一请求并使用 generation ID 忽略过期事件；批准与执行重试保留 Plan Review 事件，并清除上一轮执行事件。显式 cancel 会终止 fetch。`lib/server/research-route.ts` 中由 `createResearchRoute()` 创建的 handler 把 `request.signal` 传播到 workflow controller，`runResearch` 再为每个模型 / Tavily operation 创建有超时的子 signal。ReadableStream consumer 主动取消时，handler 的 `cancel()` 同样中止 workflow controller。
 
 该 handler 在当前进程内的 `emit()` 遇到 `ReadableStream.desiredSize <= 0` 时等待 `pull()`，所以慢 consumer 能暂停应用投递下一事件，而不是让 route 无限入队。这仍是应用边界保证，不代表上游 SDK / HTTP / provider 同步停止生成或不做缓冲。请求或 consumer 取消信号到达 handler 时，会拒绝等待者并中止 workflow；后续 `research.cancelled` 可以因客户端已断开而跳过，不会再创建 capacity waiter。反向代理、平台缓冲和 serverless 生命周期可能改变实际 streaming、断开传播与执行时限；目标部署必须单独验证 streaming、disconnect propagation 和 `maxDuration`。
 
 当前 Demo 没有网关鉴权、用户级 rate limit、并发限制或付费 quota。对公网暴露模型与 Tavily 付费 API 前，必须先在可信网关补齐这些生产控制。本地 2026-07-16 Kimi + Tavily quick 路径已经实测真实草稿增长、最终 `report.completed`、原位正式替换和引用抽屉；DeepSeek、部署 runtime 保证与其他环境仍未验证。
 
-终态只能是 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一。`createResearchRoute()` handler 记录首次终态并拒绝后续 emit；若依赖意外结束却没发终态，`ensureTerminal()` 尝试补一个安全的 `research.failed`。客户端同样拒绝终态后的记录和没有终态就结束的流。薄包装 `app/api/research/route.ts` 不复制这些规则。
+每个请求只能有一个终态：计划请求是 `plan.awaiting_approval`，执行请求是 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一。`createResearchRoute()` handler 记录首次终态并拒绝后续 emit；若依赖意外结束却没发终态，`ensureTerminal()` 尝试补一个安全的 `research.failed`。客户端同样拒绝终态后的记录和没有终态就结束的流。薄包装 `app/api/research/route.ts` 不复制这些规则。
 
 ## 高价值注释说明
 

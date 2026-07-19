@@ -61,7 +61,7 @@ const duplicateKimi: Source = {
   url: `${kimiOfficial.url}/#request-schema`,
 };
 
-const plan: ResearchPlan = {
+export const researchFlowPlan: ResearchPlan = {
   objective: "比较 Kimi 与 DeepSeek 在 Agent 工具调用中的开发协议和提供商差异",
   subquestions: [
     "两者的工具调用协议如何表达？",
@@ -159,7 +159,7 @@ export function createResearchFlowFixture(
       beginModelOperation("generatePlan", modelOptions);
       await waitForPlanRelease;
       abortIfNeeded(modelOptions?.abortSignal);
-      return plan;
+      return researchFlowPlan;
     },
     async evaluateSources(_question, sources, modelOptions) {
       beginModelOperation("evaluateSources", modelOptions);

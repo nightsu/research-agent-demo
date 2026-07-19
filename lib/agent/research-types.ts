@@ -33,11 +33,27 @@ export const researchInputSchema = z.object({
   depth: z.enum(["quick", "deep"]).default("quick"),
 });
 
+export const researchPlanRequestSchema = z.strictObject({
+  action: z.literal("plan"),
+  input: researchInputSchema,
+});
+
 export const researchPlanSchema = z.object({
   objective: z.string().min(1).max(RESEARCH_TEXT_LIMITS.short),
   subquestions: z.array(z.string().min(1).max(RESEARCH_TEXT_LIMITS.short)).min(1).max(6),
   searchQueries: z.array(searchQuerySchema).min(1).max(6),
 });
+
+export const researchExecuteRequestSchema = z.strictObject({
+  action: z.literal("execute"),
+  input: researchInputSchema,
+  plan: researchPlanSchema,
+});
+
+export const researchOperationRequestSchema = z.discriminatedUnion("action", [
+  researchPlanRequestSchema,
+  researchExecuteRequestSchema,
+]);
 
 export const httpUrlSchema = z.string().max(4_000).refine(
   (value) => {
@@ -96,7 +112,10 @@ export const reportSchema = z.object({
 export type ResearchPhase = z.infer<typeof researchPhaseSchema>;
 export type ResearchRequest = z.input<typeof researchInputSchema>;
 export type ResearchInput = z.infer<typeof researchInputSchema>;
+export type ResearchPlanRequest = z.infer<typeof researchPlanRequestSchema>;
 export type ResearchPlan = z.infer<typeof researchPlanSchema>;
+export type ResearchExecuteRequest = z.infer<typeof researchExecuteRequestSchema>;
+export type ResearchOperationRequest = z.infer<typeof researchOperationRequestSchema>;
 export type Source = z.infer<typeof sourceSchema>;
 export type SourceEvaluation = z.infer<typeof sourceEvaluationSchema>;
 export type EvidenceAssessment = z.infer<typeof evidenceAssessmentSchema>;

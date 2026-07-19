@@ -32,6 +32,9 @@ export const researchEventSchema = z.discriminatedUnion("type", [
     plan: researchPlanSchema,
   }),
   z.strictObject({
+    type: z.literal("plan.awaiting_approval"),
+  }),
+  z.strictObject({
     type: z.literal("search.started"),
     query: searchQuerySchema,
     reason: nonemptyStringSchema,

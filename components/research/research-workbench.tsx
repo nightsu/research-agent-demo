@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { ResearchForm } from "./research-form";
 import { derivePrinterRecords } from "./research-printer-model";
 import { ResearchPrinter } from "./research-printer";
+import { ResearchPlanReview } from "./research-plan-review";
 import { ResearchProgress } from "./research-progress";
 import { ResearchReportView } from "./research-report";
 import { deriveResearchViewModel, runStatusLabel } from "./research-view-model";
@@ -63,7 +64,16 @@ function getResponsiveScrollOwner(workspace: HTMLDivElement | null, mobile: bool
 }
 
 export function ResearchWorkbench() {
-  const { run, start, retry, canRetry, cancel, reset } = useResearchStream();
+  const {
+    run,
+    planReview,
+    start,
+    approvePlan,
+    retry,
+    canRetry,
+    cancel,
+    reset,
+  } = useResearchStream();
   const [responsiveScrollConfig] = useState(createResponsiveScrollConfig);
   const mobileScrollOwnerRef = useRef(responsiveScrollConfig.initialMobile);
   const mediaQuery = responsiveScrollConfig.mediaQuery;
@@ -198,6 +208,17 @@ export function ResearchWorkbench() {
     if (previousStatus.current === "running" && run.status === "cancelled") statusRef.current?.focus();
     previousStatus.current = run.status;
   }, [run.status]);
+
+  if (run.status === "awaiting-review" && planReview) {
+    return (
+      <ResearchPlanReview
+        input={planReview.input}
+        plan={planReview.plan}
+        onApprove={approvePlan}
+        onDiscard={reset}
+      />
+    );
+  }
 
   if (run.status === "idle") {
     return <main className="research-shell"><header className="hero"><p className="eyebrow">Observable research agent</p><h1>See the evidence take shape.</h1><p>Give the agent a focused question. Follow its plan, searches, source decisions, evidence gaps, and final cited report in one workspace.</p></header><ResearchForm disabled={false} onSubmit={(request) => { setFollowingLatest(true); start(request); }} /><section className="process-preview" aria-label="Research process"><span>01 · Plan</span><span>02 · Search</span><span>03 · Evaluate</span><span>04 · Synthesize</span></section></main>;

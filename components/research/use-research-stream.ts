@@ -9,12 +9,16 @@ import {
 } from "@/lib/agent/research-events";
 import {
   researchInputSchema,
+  researchPlanSchema,
+  type ResearchInput,
+  type ResearchPlan,
   type ResearchRequest,
 } from "@/lib/agent/research-types";
 
 export type ResearchRunStatus =
   | "idle"
   | "running"
+  | "awaiting-review"
   | "completed"
   | "partial"
   | "cancelled"
@@ -34,9 +38,19 @@ export interface ResearchRun {
   error?: string;
 }
 
-type State = ResearchRun & { generation: number };
+type State = ResearchRun & {
+  generation: number;
+  input?: ResearchInput;
+  proposedPlan?: ResearchPlan;
+};
 type Action =
-  | { type: "start"; generation: number }
+  | { type: "start"; generation: number; input?: ResearchInput }
+  | {
+      type: "execute";
+      generation: number;
+      input: ResearchInput;
+      plan: ResearchPlan;
+    }
   | { type: "event"; generation: number; event: ResearchEvent }
   | {
       type: "draft.flush";
@@ -65,6 +79,7 @@ const initialState: State = {
 const terminalStatuses: Partial<
   Record<ResearchEvent["type"], ResearchRunStatus>
 > = {
+  "plan.awaiting_approval": "awaiting-review",
   "report.completed": "completed",
   "research.partial": "partial",
   "research.cancelled": "cancelled",
@@ -97,6 +112,19 @@ function reducer(state: State, action: Action): State {
       events: [],
       hadReportDraft: false,
       generation: action.generation,
+      input: action.input,
+    };
+  }
+  if (action.type === "execute") {
+    return {
+      ...state,
+      status: "running",
+      events: state.events.filter((event) => event.type.startsWith("plan.")),
+      reportDraft: undefined,
+      hadReportDraft: false,
+      error: undefined,
+      generation: action.generation,
+      input: action.input,
     };
   }
   if (action.type === "reset") {
@@ -129,7 +157,7 @@ function reducer(state: State, action: Action): State {
       ...state,
       status: "cancelled",
       // 本地取消没有服务端 NDJSON 记录；只在尚无终止事件时补一条，避免双重终止卡片。
-      events: state.events.some(isTerminal)
+      events: state.events.some(isResearchTerminal)
         ? state.events
         : [...state.events, event],
       reportDraft: state.reportDraft
@@ -139,7 +167,10 @@ function reducer(state: State, action: Action): State {
     };
   }
   if (action.type === "fail") {
-    if (state.events.some(isTerminal) || terminalRunStatuses.has(state.status)) {
+    if (
+      state.events.some(isResearchTerminal) ||
+      terminalRunStatuses.has(state.status)
+    ) {
       // 已验证的首个终态是唯一事实来源；传输尾部或清理错误不能再改写它。
       return state;
     }
@@ -148,7 +179,7 @@ function reducer(state: State, action: Action): State {
       ...state,
       status: "failed",
       // 尚无服务端终态时，客户端只合成固定、已清洗的本地 research.failed 事件。
-      events: state.events.some(isTerminal)
+      events: state.events.some(isResearchTerminal)
         ? state.events
         : [...state.events, event],
       reportDraft: state.reportDraft
@@ -182,6 +213,10 @@ function reducer(state: State, action: Action): State {
     ...state,
     status,
     events: [...state.events, action.event],
+    proposedPlan:
+      action.event.type === "plan.completed"
+        ? action.event.plan
+        : state.proposedPlan,
     reportDraft,
     error:
       action.event.type === "research.failed"
@@ -196,9 +231,15 @@ function isTerminal(event: ResearchEvent): boolean {
   return terminalStatuses[event.type] !== undefined;
 }
 
+function isResearchTerminal(event: ResearchEvent): boolean {
+  return isTerminal(event) && event.type !== "plan.awaiting_approval";
+}
+
 export function useResearchStream(): {
   run: ResearchRun;
+  planReview?: { input: ResearchInput; plan: ResearchPlan };
   start(input: ResearchRequest): Promise<void>;
+  approvePlan(plan: ResearchPlan): Promise<void>;
   retry(): Promise<void>;
   canRetry: boolean;
   cancel(): void;
@@ -209,6 +250,7 @@ export function useResearchStream(): {
   const controllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const lastInputRef = useRef<ResearchRequest | null>(null);
+  const lastApprovedPlanRef = useRef<ResearchPlan | null>(null);
   const reportAccumulatorRef = useRef<ReportAccumulator | null>(null);
   const reportFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [canRetry, setCanRetry] = useState(false);
@@ -269,8 +311,8 @@ export function useResearchStream(): {
     };
   }, [clearReportBuffer]);
 
-  const start = useCallback(
-    async (rawInput: ResearchRequest) => {
+  const runOperation = useCallback(
+    async (rawInput: ResearchRequest, approvedPlan?: ResearchPlan) => {
       controllerRef.current?.abort();
       clearReportBuffer();
       const generation = ++generationRef.current;
@@ -296,7 +338,16 @@ export function useResearchStream(): {
 
       const controller = new AbortController();
       controllerRef.current = controller;
-      dispatch({ type: "start", generation });
+      dispatch(
+        approvedPlan
+          ? {
+              type: "execute",
+              generation,
+              input: parsed.data,
+              plan: approvedPlan,
+            }
+          : { type: "start", generation, input: parsed.data },
+      );
 
       let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
       let protocolFailure = false;
@@ -306,7 +357,11 @@ export function useResearchStream(): {
         const response = await fetch("/api/research", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(parsed.data),
+          body: JSON.stringify(
+            approvedPlan
+              ? { action: "execute", input: parsed.data, plan: approvedPlan }
+              : { action: "plan", input: parsed.data },
+          ),
           signal: controller.signal,
         });
 
@@ -487,6 +542,25 @@ export function useResearchStream(): {
     ],
   );
 
+  const start = useCallback(
+    async (rawInput: ResearchRequest) => {
+      lastApprovedPlanRef.current = null;
+      await runOperation(rawInput);
+    },
+    [runOperation],
+  );
+
+  const approvePlan = useCallback(
+    async (rawPlan: ResearchPlan) => {
+      const input = lastInputRef.current;
+      if (!input) return;
+      const plan = researchPlanSchema.parse(rawPlan);
+      lastApprovedPlanRef.current = plan;
+      await runOperation(input, plan);
+    },
+    [runOperation],
+  );
+
   const cancel = useCallback(() => {
     const controller = controllerRef.current;
     if (!controller) return;
@@ -504,15 +578,17 @@ export function useResearchStream(): {
     controllerRef.current = null;
     clearReportBuffer();
     const generation = ++generationRef.current;
+    lastInputRef.current = null;
+    lastApprovedPlanRef.current = null;
+    setCanRetry(false);
     dispatch({ type: "reset", generation });
   }, [clearReportBuffer]);
 
   const retry = useCallback(async () => {
     const input = lastInputRef.current;
     if (!input) return;
-    // 重试只复用已校验输入；start 会创建新 generation 并清空旧事件与运行状态。
-    await start(input);
-  }, [start]);
+    await runOperation(input, lastApprovedPlanRef.current ?? undefined);
+  }, [runOperation]);
 
   const run: ResearchRun = {
     status: state.status,
@@ -521,5 +597,17 @@ export function useResearchStream(): {
     ...(state.reportDraft ? { reportDraft: state.reportDraft } : {}),
     ...(state.error === undefined ? {} : { error: state.error }),
   };
-  return { run, start, retry, canRetry, cancel, reset };
+  const planReview = state.status === "awaiting-review" && state.input && state.proposedPlan
+    ? { input: state.input, plan: state.proposedPlan }
+    : undefined;
+  return {
+    run,
+    planReview,
+    start,
+    approvePlan,
+    retry,
+    canRetry,
+    cancel,
+    reset,
+  };
 }

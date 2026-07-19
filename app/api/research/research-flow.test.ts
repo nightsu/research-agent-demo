@@ -7,6 +7,7 @@ import {
   researchFlowFollowUpQuery,
   researchFlowInitialQuery,
   researchFlowInput,
+  researchFlowPlan,
   researchFlowRejectedSourceId,
 } from "../../../lib/agent/research-fixtures";
 import { runResearch } from "../../../lib/agent/research-agent";
@@ -61,8 +62,8 @@ async function readRemainingEvents(
   };
 }
 
-async function executeFixture(options: { deferPlan?: boolean } = {}) {
-  const fixture = createResearchFlowFixture(options);
+async function executeFixture() {
+  const fixture = createResearchFlowFixture();
   const generateReport = fixture.model.generateReport.bind(fixture.model);
   fixture.model.generateReport = async (
     question,
@@ -110,7 +111,11 @@ async function executeFixture(options: { deferPlan?: boolean } = {}) {
     new Request("http://localhost/api/research", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(researchFlowInput),
+      body: JSON.stringify({
+        action: "execute",
+        input: researchFlowInput,
+        plan: researchFlowPlan,
+      }),
     }),
   );
   const reader = response.body!.getReader();
@@ -127,16 +132,77 @@ async function executeFixture(options: { deferPlan?: boolean } = {}) {
 }
 
 describe("POST /api/research complete workflow", () => {
+  it("stops after proposing a plan and waits for approval before using tools", async () => {
+    const fixture = createResearchFlowFixture();
+    const post = createResearchRoute({
+      createModel: () => fixture.model,
+      runResearch,
+      searchWeb: fixture.searchWeb,
+      extractSources: fixture.extractSources,
+    });
+
+    const response = await post(
+      new Request("http://localhost/api/research", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "plan", input: researchFlowInput }),
+      }),
+    );
+    const events = (await response.text())
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => decodeEventLine(`${line}\n`));
+
+    expect(events.map((event) => event.type)).toEqual([
+      "plan.started",
+      "plan.completed",
+      "plan.awaiting_approval",
+    ]);
+    expect(fixture.modelCalls).toEqual(["generatePlan"]);
+    expect(fixture.toolCalls).toEqual([]);
+  });
+
+  it("executes an approved plan without asking the model to plan again", async () => {
+    const fixture = createResearchFlowFixture();
+    const post = createResearchRoute({
+      createModel: () => fixture.model,
+      runResearch,
+      searchWeb: fixture.searchWeb,
+      extractSources: fixture.extractSources,
+    });
+
+    const response = await post(
+      new Request("http://localhost/api/research", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "execute",
+          input: researchFlowInput,
+          plan: researchFlowPlan,
+        }),
+      }),
+    );
+    const events = (await response.text())
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => decodeEventLine(`${line}\n`));
+
+    expect(response.status).toBe(200);
+    expect(events.at(-1)?.type).toBe("report.completed");
+    expect(fixture.modelCalls).not.toContain("generatePlan");
+    expect(fixture.searchCalls[0]).toEqual({
+      query: researchFlowInitialQuery,
+      timeRange: "year",
+    });
+  });
+
   it("streams a deterministic two-round cited report through the real route and workflow", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const firstRun = await executeFixture({ deferPlan: true });
+    const firstRun = await executeFixture();
 
-    expect(decodeEventLine(new TextDecoder().decode(firstRun.firstChunk))).toEqual({
-      type: "plan.started",
-      question: researchFlowInput.question,
-    });
-    expect(firstRun.fixture.planReleased).toBe(false);
-    firstRun.fixture.releasePlan();
+    expect(
+      decodeEventLine(new TextDecoder().decode(firstRun.firstChunk)).type,
+    ).toBe("progress.updated");
 
     const { events, serialized } = await readRemainingEvents(
       firstRun.reader,
@@ -257,7 +323,6 @@ describe("POST /api/research complete workflow", () => {
     expect(terminalState?.report).toEqual(completed.report);
 
     expect(firstRun.fixture.modelCalls).toEqual([
-      "generatePlan",
       "evaluateSources",
       "assessEvidence",
       "evaluateSources",
@@ -342,7 +407,11 @@ describe("POST /api/research complete workflow", () => {
     const response = await post(new Request("http://localhost/api/research", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(researchFlowInput),
+      body: JSON.stringify({
+        action: "execute",
+        input: researchFlowInput,
+        plan: researchFlowPlan,
+      }),
       signal: requestController.signal,
     }));
     const reader = response.body!.getReader();

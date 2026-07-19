@@ -15,6 +15,11 @@ const input: ResearchInput = {
   timeRange: "year",
   depth: "quick",
 };
+const proposedPlan = {
+  objective: "Understand browser rendering changes",
+  subquestions: ["What changed?"],
+  searchQueries: ["browser rendering changes"],
+};
 
 const report = {
   title: "Browser rendering",
@@ -186,6 +191,138 @@ async function drainStreamReads(): Promise<void> {
 }
 
 describe("useResearchStream", () => {
+  it("requests a plan and exposes it for review before research begins", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      responseFromChunks([
+        line({ type: "plan.started", question: input.question }),
+        line({ type: "plan.completed", plan: proposedPlan }),
+        line({ type: "plan.awaiting_approval" }),
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/research",
+      expect.objectContaining({
+        body: JSON.stringify({ action: "plan", input }),
+      }),
+    );
+    expect(result.current.run.status).toBe("awaiting-review");
+    expect(result.current.planReview).toEqual({ input, plan: proposedPlan });
+  });
+
+  it("submits a revised Approved Plan without replacing the original input", async () => {
+    const revisedPlan = {
+      ...proposedPlan,
+      objective: "Compare browser rendering changes",
+      searchQueries: ["browser rendering comparison"],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        responseFromChunks([
+          line({ type: "plan.completed", plan: proposedPlan }),
+          line({ type: "plan.awaiting_approval" }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        responseFromChunks([line({ type: "report.completed", report })]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(revisedPlan));
+
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      action: "execute",
+      input,
+      plan: revisedPlan,
+    });
+    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "plan.completed",
+      "plan.awaiting_approval",
+      "report.completed",
+    ]);
+  });
+
+  it("retries failed execution with the same Approved Plan", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        responseFromChunks([
+          line({ type: "plan.completed", plan: proposedPlan }),
+          line({ type: "plan.awaiting_approval" }),
+        ]),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(
+        responseFromChunks([line({ type: "report.completed", report })]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
+    expect(result.current.run.status).toBe("failed");
+    await act(() => result.current.retry());
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      action: "execute",
+      input,
+      plan: proposedPlan,
+    });
+    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "plan.completed",
+      "plan.awaiting_approval",
+      "report.completed",
+    ]);
+  });
+
+  it("retries cancelled execution with the same Approved Plan", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(
+        responseFromChunks([
+          line({ type: "plan.completed", plan: proposedPlan }),
+          line({ type: "plan.awaiting_approval" }),
+        ]),
+      )
+      .mockImplementationOnce((_url, options: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        }),
+      )
+      .mockResolvedValueOnce(
+        responseFromChunks([line({ type: "report.completed", report })]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+    let execution!: Promise<void>;
+    act(() => {
+      execution = result.current.approvePlan(proposedPlan);
+    });
+    await waitFor(() => expect(result.current.run.status).toBe("running"));
+    act(() => result.current.cancel());
+    await act(() => execution);
+    expect(result.current.run.status).toBe("cancelled");
+
+    await act(() => result.current.retry());
+
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      action: "execute",
+      input,
+      plan: proposedPlan,
+    });
+    expect(result.current.run.status).toBe("completed");
+  });
+
   it("buffers report deltas outside the durable event log and flushes one batched draft after 40ms", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
@@ -772,7 +909,7 @@ describe("useResearchStream", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({ action: "plan", input }),
       signal: expect.any(AbortSignal),
     });
     act(() => stream.enqueue(line({ type: "research.cancelled" })));
@@ -802,14 +939,20 @@ describe("useResearchStream", () => {
     await act(() => result.current.start(explicitRequest));
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
-      question: input.question,
-      timeRange: "year",
-      depth: "quick",
+      action: "plan",
+      input: {
+        question: input.question,
+        timeRange: "year",
+        depth: "quick",
+      },
     });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
-      question: input.question,
-      timeRange: "week",
-      depth: "deep",
+      action: "plan",
+      input: {
+        question: input.question,
+        timeRange: "week",
+        depth: "deep",
+      },
     });
   });
 
@@ -1211,7 +1354,13 @@ describe("useResearchStream", () => {
     expect(result.current.run.status).toBe("failed");
     await act(() => result.current.retry());
 
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/research", expect.objectContaining({ body: JSON.stringify(input) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/research",
+      expect.objectContaining({
+        body: JSON.stringify({ action: "plan", input }),
+      }),
+    );
     expect(result.current.run).toEqual({
       status: "completed",
       events: [terminal],

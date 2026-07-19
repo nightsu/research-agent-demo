@@ -20,7 +20,9 @@ import {
 } from "./report-draft";
 import {
   researchInputSchema,
+  researchPlanSchema,
   type ResearchInput,
+  type ResearchPlan,
   type Source,
 } from "./research-types";
 import {
@@ -35,6 +37,7 @@ import {
 
 export interface ResearchDependencies {
   model: ResearchModel;
+  approvedPlan: ResearchPlan;
   searchWeb: typeof defaultSearchWeb;
   extractSources: typeof defaultExtractSources;
   // Resolving means the event was delivered; rejecting means it was not.
@@ -98,6 +101,26 @@ function uniqueSources(sources: Source[], existing: Source[] = []): Source[] {
     seen.add(url);
     return true;
   });
+}
+
+export async function proposeResearchPlan(
+  rawInput: ResearchInput,
+  deps: Pick<ResearchDependencies, "model" | "emit">,
+  signal?: AbortSignal,
+): Promise<ResearchPlan> {
+  const input = researchInputSchema.parse(rawInput);
+  signal?.throwIfAborted();
+  await deps.emit(researchEventSchema.parse({
+    type: "plan.started",
+    question: input.question,
+  }));
+  const plan = await deps.model.generatePlan(input.question, {
+    abortSignal: signal,
+  });
+  signal?.throwIfAborted();
+  await deps.emit(researchEventSchema.parse({ type: "plan.completed", plan }));
+  await deps.emit(researchEventSchema.parse({ type: "plan.awaiting_approval" }));
+  return plan;
 }
 
 export async function runResearch(
@@ -315,14 +338,8 @@ export async function runResearch(
   if (signal?.aborted) return cancel();
 
   try {
-    await emit({ type: "plan.started", question: input.question });
-    const researchPlan = await invokeModel((options) =>
-      deps.model.generatePlan(input.question, options),
-    );
-    await transition(
-      { type: "plan.completed", payload: researchPlan },
-      [{ type: "plan.completed", plan: researchPlan }],
-    );
+    const researchPlan = researchPlanSchema.parse(deps.approvedPlan);
+    await transition({ type: "plan.completed", payload: researchPlan });
 
     const seenQueries = new Set<string>();
     const pendingQueries: Array<{ query: string; reason: string }> = [];
