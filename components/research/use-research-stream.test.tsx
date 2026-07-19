@@ -47,6 +47,13 @@ function localFailure(
   return { type: "research.failed", message, recoverable };
 }
 
+function planReviewResponse(): Response {
+  return responseFromChunks([
+    line({ type: "plan.completed", plan: proposedPlan }),
+    line({ type: "plan.awaiting_approval" }),
+  ]);
+}
+
 function responseFromChunks(
   chunks: string[],
   options: { onCancel?: () => void; failAfter?: number } = {},
@@ -326,11 +333,17 @@ describe("useResearchStream", () => {
   it("buffers report deltas outside the durable event log and flushes one batched draft after 40ms", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result } = renderHook(() => useResearchStream());
+    await act(() => result.current.start(input));
     let promise!: Promise<void>;
     act(() => {
-      promise = result.current.start(input);
+      promise = result.current.approvePlan(proposedPlan);
     });
 
     act(() => {
@@ -346,6 +359,8 @@ describe("useResearchStream", () => {
       status: "streaming",
     });
     expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "plan.completed",
+      "plan.awaiting_approval",
       "report.started",
     ]);
     act(() => vi.advanceTimersByTime(39));
@@ -365,11 +380,17 @@ describe("useResearchStream", () => {
   it("uses replace deltas as complete snapshots", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result } = renderHook(() => useResearchStream());
+    await act(() => result.current.start(input));
     let promise!: Promise<void>;
     act(() => {
-      promise = result.current.start(input);
+      promise = result.current.approvePlan(proposedPlan);
     });
     act(() => {
       stream.enqueue(line({ type: "report.started", partial: false }));
@@ -406,11 +427,14 @@ describe("useResearchStream", () => {
     ];
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(responseFromChunks(chunks, { onCancel: cancelled })),
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(responseFromChunks(chunks, { onCancel: cancelled })),
     );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run.status).toBe("failed");
     expect(result.current.run.error).toBe("Research stream protocol error.");
@@ -420,6 +444,8 @@ describe("useResearchStream", () => {
       status: "incomplete",
     });
     expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "plan.completed",
+      "plan.awaiting_approval",
       "report.started",
       "research.failed",
     ]);
@@ -435,14 +461,22 @@ describe("useResearchStream", () => {
       line({ type: "report.started", partial: false }),
       line({ type: "report.delta", sequence: 0, mode: "replace", text: "# Reset provider secret" }),
     ]);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run).toEqual({
       status: "failed",
       events: [
+        { type: "plan.completed", plan: proposedPlan },
+        { type: "plan.awaiting_approval" },
         { type: "report.started", partial: false },
         localFailure("Research stream protocol error."),
       ],
@@ -463,11 +497,17 @@ describe("useResearchStream", () => {
   it("force-flushes before validating, repairing, and a terminal event", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result } = renderHook(() => useResearchStream());
+    await act(() => result.current.start(input));
     let promise!: Promise<void>;
     act(() => {
-      promise = result.current.start(input);
+      promise = result.current.approvePlan(proposedPlan);
     });
     act(() => {
       stream.enqueue(line({ type: "report.started", partial: false }));
@@ -480,7 +520,7 @@ describe("useResearchStream", () => {
       sequence: 0,
       status: "validating",
     });
-    expect(result.current.run.events.map((event) => event.type)).toEqual([
+    expect(result.current.run.events.map((event) => event.type).slice(-2)).toEqual([
       "report.started",
       "report.validating",
     ]);
@@ -509,17 +549,18 @@ describe("useResearchStream", () => {
         : { type, report, reason: "Source limit reached." };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        responseFromChunks([
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(responseFromChunks([
           line({ type: "report.started", partial: type === "research.partial" }),
           line({ type: "report.delta", sequence: 0, mode: "append", text: "draft" }),
           line(terminal),
-        ]),
-      ),
+        ])),
     );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run.status).toBe(status);
     expect(result.current.run.reportDraft).toBeUndefined();
@@ -537,17 +578,20 @@ describe("useResearchStream", () => {
         : { type };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        responseFromChunks([
-          line({ type: "report.started", partial: false }),
-          line({ type: "report.delta", sequence: 0, mode: "append", text: "unfinished" }),
-          line(terminal),
-        ]),
-      ),
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(
+          responseFromChunks([
+            line({ type: "report.started", partial: false }),
+            line({ type: "report.delta", sequence: 0, mode: "append", text: "unfinished" }),
+            line(terminal),
+          ]),
+        ),
     );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run.status).toBe(status);
     expect(result.current.run.reportDraft).toEqual({
@@ -562,16 +606,17 @@ describe("useResearchStream", () => {
     vi.useFakeTimers();
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        responseFromChunks([
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(responseFromChunks([
           line({ type: "report.started", partial: false }),
           line({ type: "report.completed", report }),
-        ]),
-      ),
+        ])),
     );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run.reportDraft).toBeUndefined();
     expect(result.current.run.hadReportDraft).toBe(false);
@@ -585,15 +630,19 @@ describe("useResearchStream", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
         .mockResolvedValueOnce(first.response)
+        .mockResolvedValueOnce(planReviewResponse())
         .mockResolvedValueOnce(second.response)
+        .mockResolvedValueOnce(planReviewResponse())
         .mockResolvedValueOnce(afterReset.response),
     );
     const { result } = renderHook(() => useResearchStream());
     let firstPromise!: Promise<void>;
     let secondPromise!: Promise<void>;
+    await act(() => result.current.start(input));
     act(() => {
-      firstPromise = result.current.start(input);
+      firstPromise = result.current.approvePlan(proposedPlan);
     });
     act(() => {
       first.enqueue(line({ type: "report.started", partial: false }));
@@ -601,11 +650,15 @@ describe("useResearchStream", () => {
     });
     await drainStreamReads();
 
-    act(() => {
-      secondPromise = result.current.start({
+    await act(() =>
+      result.current.start({
         ...input,
         question: "What changed in JavaScript engines this year?",
-      });
+      }),
+    );
+    await act(() => firstPromise);
+    act(() => {
+      secondPromise = result.current.approvePlan(proposedPlan);
     });
     expect(result.current.run.reportDraft).toBeUndefined();
     expect(result.current.run.hadReportDraft).toBe(false);
@@ -621,8 +674,6 @@ describe("useResearchStream", () => {
     await act(() => secondPromise);
     expect(result.current.run.reportDraft?.markdown).toBe("fresh second run");
     expect(result.current.run.reportDraft?.sequence).toBe(0);
-    first.error(new DOMException("aborted", "AbortError"));
-    await act(() => firstPromise);
     act(() => result.current.reset());
     expect(result.current.run).toMatchObject({
       status: "idle",
@@ -630,9 +681,10 @@ describe("useResearchStream", () => {
       hadReportDraft: false,
     });
 
+    await act(() => result.current.start(input));
     let afterResetPromise!: Promise<void>;
     act(() => {
-      afterResetPromise = result.current.start(input);
+      afterResetPromise = result.current.approvePlan(proposedPlan);
     });
     act(() => {
       afterReset.enqueue(line({ type: "report.started", partial: false }));
@@ -652,14 +704,16 @@ describe("useResearchStream", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
         .mockResolvedValueOnce(first.response)
         .mockResolvedValueOnce(second.response),
     );
     const { result } = renderHook(() => useResearchStream());
     let firstPromise!: Promise<void>;
     let retryPromise!: Promise<void>;
+    await act(() => result.current.start(input));
     act(() => {
-      firstPromise = result.current.start(input);
+      firstPromise = result.current.approvePlan(proposedPlan);
     });
     act(() => {
       first.enqueue(line({ type: "report.started", partial: false }));
@@ -682,11 +736,12 @@ describe("useResearchStream", () => {
     });
     act(() => second.close());
     await act(() => retryPromise);
-    first.error(new DOMException("aborted", "AbortError"));
     await act(() => firstPromise);
     expect(result.current.run.reportDraft?.markdown).toBe("fresh retry draft");
     expect(result.current.run.reportDraft?.sequence).toBe(0);
     expect(result.current.run.events.map((event) => event.type)).toEqual([
+      "plan.completed",
+      "plan.awaiting_approval",
       "report.started",
       "research.cancelled",
     ]);
@@ -695,12 +750,18 @@ describe("useResearchStream", () => {
   it("cancels with an immediate incomplete flush and clears pending timers on unmount in Strict Mode", async () => {
     vi.useFakeTimers();
     const stream = deferredResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result, unmount } = renderHook(() => useResearchStream(), {
       wrapper: StrictMode,
     });
+    await act(() => result.current.start(input));
     act(() => {
-      void result.current.start(input);
+      void result.current.approvePlan(proposedPlan);
     });
     act(() => {
       stream.enqueue(line({ type: "report.started", partial: false }));
@@ -724,10 +785,10 @@ describe("useResearchStream", () => {
       question: input.question,
     };
     const second: ResearchEvent = {
-      type: "conclusion.updated",
-      summary: "Evidence is converging.",
+      type: "plan.completed",
+      plan: proposedPlan,
     };
-    const terminal: ResearchEvent = { type: "report.completed", report };
+    const terminal: ResearchEvent = { type: "plan.awaiting_approval" };
     const payload = `${line(first).trimEnd()}\r\n${line(second)}${line(terminal)}`;
     vi.stubGlobal(
       "fetch",
@@ -744,7 +805,7 @@ describe("useResearchStream", () => {
     await act(() => result.current.start(input));
 
     expect(result.current.run).toEqual({
-      status: "completed",
+      status: "awaiting-review",
       events: [first, second, terminal],
       hadReportDraft: false,
     });
@@ -752,10 +813,10 @@ describe("useResearchStream", () => {
 
   it("reassembles a multibyte Chinese value split inside one UTF-8 code point", async () => {
     const chineseEvent: ResearchEvent = {
-      type: "conclusion.updated",
-      summary: "浏览器渲染正在变化。",
+      type: "plan.started",
+      question: "浏览器渲染正在变化。",
     };
-    const terminal: ResearchEvent = { type: "report.completed", report };
+    const terminal: ResearchEvent = { type: "plan.awaiting_approval" };
     const payload = `${line(chineseEvent)}${line(terminal)}`;
     const encoder = new TextEncoder();
     const bytes = encoder.encode(payload);
@@ -774,7 +835,7 @@ describe("useResearchStream", () => {
     await act(() => result.current.start(input));
 
     expect(result.current.run).toEqual({
-      status: "completed",
+      status: "awaiting-review",
       events: [chineseEvent, terminal],
       hadReportDraft: false,
     });
@@ -825,14 +886,17 @@ describe("useResearchStream", () => {
           : { type };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(responseFromChunks([line(terminal)])),
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(responseFromChunks([line(terminal)])),
     );
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
+    await act(() => result.current.approvePlan(proposedPlan));
 
     expect(result.current.run.status).toBe(status);
-    expect(result.current.run.events).toEqual([terminal]);
+    expect(result.current.run.events.at(-1)).toEqual(terminal);
     expect(result.current.run.error).toBe(
       type === "research.failed" ? "Safe server error." : undefined,
     );
@@ -871,20 +935,26 @@ describe("useResearchStream", () => {
     "keeps the first %s terminal outcome when the next stream read fails",
     async (terminal, status, error) => {
       const stream = deferredResponse();
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn()
+          .mockResolvedValueOnce(planReviewResponse())
+          .mockResolvedValueOnce(stream.response),
+      );
       const { result } = renderHook(() => useResearchStream());
+      await act(() => result.current.start(input));
       let promise!: Promise<void>;
       act(() => {
-        promise = result.current.start(input);
+        promise = result.current.approvePlan(proposedPlan);
       });
 
       act(() => stream.enqueue(line(terminal)));
-      await waitFor(() => expect(result.current.run.events).toEqual([terminal]));
+      await waitFor(() => expect(result.current.run.events.at(-1)).toEqual(terminal));
       act(() => stream.error(new Error("transport tail secret")));
       await act(() => promise);
 
       expect(result.current.run.status).toBe(status);
-      expect(result.current.run.events).toEqual([terminal]);
+      expect(result.current.run.events.at(-1)).toEqual(terminal);
       expect(result.current.run.error).toBe(error);
       expect(JSON.stringify(result.current.run)).not.toContain("transport tail secret");
     },
@@ -958,14 +1028,14 @@ describe("useResearchStream", () => {
 
   it("releases the reader lock exactly once after normal completion", async () => {
     const stream = responseWithReaderSpies([
-      line({ type: "report.completed", report }),
+      line({ type: "plan.awaiting_approval" }),
     ]);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
     const { result } = renderHook(() => useResearchStream());
 
     await act(() => result.current.start(input));
 
-    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.status).toBe("awaiting-review");
     expect(stream.cancel).not.toHaveBeenCalled();
     expect(stream.releaseLock).toHaveBeenCalledOnce();
   });
@@ -1135,24 +1205,28 @@ describe("useResearchStream", () => {
   it("ignores a local cancel after a server terminal has already been accepted", async () => {
     const terminal: ResearchEvent = { type: "report.completed", report };
     const stream = deferredResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stream.response));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(planReviewResponse())
+        .mockResolvedValueOnce(stream.response),
+    );
     const { result } = renderHook(() => useResearchStream());
+    await act(() => result.current.start(input));
     let promise!: Promise<void>;
     act(() => {
-      promise = result.current.start(input);
+      promise = result.current.approvePlan(proposedPlan);
     });
 
     act(() => stream.enqueue(line(terminal)));
-    await waitFor(() => expect(result.current.run.events).toEqual([terminal]));
+    await waitFor(() => expect(result.current.run.events.at(-1)).toEqual(terminal));
     act(() => result.current.cancel());
     stream.error(new DOMException("aborted", "AbortError"));
     await act(() => promise);
 
-    expect(result.current.run).toEqual({
-      status: "completed",
-      events: [terminal],
-      hadReportDraft: false,
-    });
+    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.events.at(-1)).toEqual(terminal);
+    expect(result.current.run.hadReportDraft).toBe(false);
   });
 
   it("cancels promptly, aborts the request, and does not overwrite a terminal run", async () => {
@@ -1175,12 +1249,12 @@ describe("useResearchStream", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
-        responseFromChunks([line({ type: "report.completed", report })]),
+        responseFromChunks([line({ type: "plan.awaiting_approval" })]),
       ),
     );
     await act(() => result.current.start(input));
     act(() => result.current.cancel());
-    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.status).toBe("awaiting-review");
   });
 
   it("ignores late chunks after a local cancellation", async () => {
@@ -1250,14 +1324,14 @@ describe("useResearchStream", () => {
     });
 
     expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
-    act(() => second.enqueue(line({ type: "report.completed", report })));
+    act(() => second.enqueue(line({ type: "plan.awaiting_approval" })));
     act(() => second.close());
     await act(() => secondPromise);
     first.error(new Error("stale secret"));
     await act(() => firstPromise);
-    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.status).toBe("awaiting-review");
     expect(result.current.run.events).toEqual([
-      { type: "report.completed", report },
+      { type: "plan.awaiting_approval" },
     ]);
   });
 
@@ -1279,7 +1353,7 @@ describe("useResearchStream", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
-        responseFromChunks([line({ type: "report.completed", report })]),
+        responseFromChunks([line({ type: "plan.awaiting_approval" })]),
       ),
     );
     const { result } = renderHook(() => useResearchStream(), {
@@ -1288,7 +1362,7 @@ describe("useResearchStream", () => {
 
     await act(() => result.current.start(input));
 
-    expect(result.current.run.status).toBe("completed");
+    expect(result.current.run.status).toBe("awaiting-review");
   });
 
   it("maps abort caused by cancel to cancelled and sanitizes unrelated fetch errors", async () => {
@@ -1328,7 +1402,6 @@ describe("useResearchStream", () => {
   it.each([
     ["a missing body", new Response(null)],
     ["a reader error", responseFromChunks([line({ type: "plan.started", question: input.question })], { failAfter: 1 })],
-    ["EOF without a terminal", responseFromChunks([line({ type: "plan.started", question: input.question })])],
   ])("fails generically for %s", async (_name, response) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
     const { result } = renderHook(() => useResearchStream());
@@ -1342,8 +1415,25 @@ describe("useResearchStream", () => {
     );
   });
 
+  it("reports EOF without a Request Terminal as a protocol failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        responseFromChunks([
+          line({ type: "plan.started", question: input.question }),
+        ]),
+      ),
+    );
+    const { result } = renderHook(() => useResearchStream());
+
+    await act(() => result.current.start(input));
+
+    expect(result.current.run.status).toBe("failed");
+    expect(result.current.run.error).toBe("Research stream protocol error.");
+  });
+
   it("retries the last valid request from scratch", async () => {
-    const terminal: ResearchEvent = { type: "report.completed", report };
+    const terminal: ResearchEvent = { type: "plan.awaiting_approval" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 500 }))
       .mockResolvedValueOnce(responseFromChunks([line(terminal)]));
@@ -1362,7 +1452,7 @@ describe("useResearchStream", () => {
       }),
     );
     expect(result.current.run).toEqual({
-      status: "completed",
+      status: "awaiting-review",
       events: [terminal],
       hadReportDraft: false,
     });

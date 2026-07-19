@@ -32,6 +32,13 @@ const approvedPlan: ResearchPlan = {
   subquestions: ["事件是否遵守协议？"],
   searchQueries: ["research stream protocol"],
 };
+const routeProgress: ResearchEvent = {
+  type: "progress.updated",
+  operationCount: 1,
+  operationLimit: 8,
+  searchRounds: 0,
+  searchRoundLimit: 3,
+};
 
 function emptyState(input: ResearchInput): ResearchState {
   return {
@@ -170,7 +177,7 @@ describe("POST /api/research", () => {
     });
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         await waitForSecond;
         await dependencies.emit({ type: "research.cancelled" });
         return emptyState(input);
@@ -184,10 +191,7 @@ describe("POST /api/research", () => {
     const first = await reader.read();
 
     expect(first.done).toBe(false);
-    expect(decodeEventLine(decoder.decode(first.value))).toEqual({
-      type: "plan.started",
-      question,
-    });
+    expect(decodeEventLine(decoder.decode(first.value))).toEqual(routeProgress);
 
     releaseSecond();
     const second = await reader.read();
@@ -253,7 +257,7 @@ describe("POST /api/research", () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies, signal) => {
         workflowSignal = signal!;
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         await new Promise<void>((resolve) =>
           signal!.addEventListener("abort", () => resolve(), { once: true }),
         );
@@ -280,10 +284,11 @@ describe("POST /api/research", () => {
     const removeListener = vi.spyOn(researchRequest.signal, "removeEventListener");
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies, signal) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
-        await new Promise<void>((resolve) =>
-          signal!.addEventListener("abort", () => resolve(), { once: true }),
-        );
+        await dependencies.emit(routeProgress);
+        await new Promise<void>((resolve) => {
+          if (signal!.aborted) resolve();
+          else signal!.addEventListener("abort", () => resolve(), { once: true });
+        });
         return emptyState(input);
       },
     );
@@ -330,7 +335,7 @@ describe("POST /api/research", () => {
   it("adds one failed terminal event when research rejects after progress", async () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         throw new Error("provider secret and stack trace");
       },
     );
@@ -339,7 +344,7 @@ describe("POST /api/research", () => {
     const events = await readEvents(await post(jsonRequest({ question })));
 
     expect(events).toEqual([
-      { type: "plan.started", question },
+      routeProgress,
       {
         type: "research.failed",
         message: "The research request failed.",
@@ -351,7 +356,7 @@ describe("POST /api/research", () => {
   it("adds one failed terminal event when research resolves after progress", async () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         return emptyState(input);
       },
     );
@@ -360,7 +365,7 @@ describe("POST /api/research", () => {
     const events = await readEvents(await post(jsonRequest({ question })));
 
     expect(events).toEqual([
-      { type: "plan.started", question },
+      routeProgress,
       {
         type: "research.failed",
         message: "The research request failed.",
@@ -469,7 +474,7 @@ describe("POST /api/research", () => {
     let secondDelivered = false;
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         secondAttempted();
         await dependencies.emit({ type: "research.cancelled" });
         secondDelivered = true;
@@ -490,10 +495,7 @@ describe("POST /api/research", () => {
     const second = await reader.read();
     const end = await reader.read();
 
-    expect(decodeEventLine(decoder.decode(first.value))).toEqual({
-      type: "plan.started",
-      question,
-    });
+    expect(decodeEventLine(decoder.decode(first.value))).toEqual(routeProgress);
     expect(decodeEventLine(decoder.decode(second.value))).toEqual({
       type: "research.cancelled",
     });
@@ -552,7 +554,7 @@ describe("POST /api/research", () => {
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies, signal) => {
         workflowSignal = signal!;
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         secondAttempted();
         try {
           await dependencies.emit({ type: "research.cancelled" });
@@ -581,7 +583,7 @@ describe("POST /api/research", () => {
     let cancellationSettled = false;
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies, signal) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         firstDelivered();
         await new Promise<void>((resolve) =>
           signal!.addEventListener("abort", () => resolve(), { once: true }),
@@ -610,7 +612,7 @@ describe("POST /api/research", () => {
     let afterTerminalRejected = false;
     const run = vi.fn<ResearchRouteDependencies["runResearch"]>(
       async (input, dependencies, signal) => {
-        await dependencies.emit({ type: "plan.started", question: input.question });
+        await dependencies.emit(routeProgress);
         workflowStarted();
         await new Promise<void>((resolve) =>
           signal!.addEventListener("abort", () => resolve(), { once: true }),
@@ -626,10 +628,7 @@ describe("POST /api/research", () => {
         }
         await dependencies.emit({ type: "research.cancelled" });
         try {
-          await dependencies.emit({
-            type: "plan.started",
-            question: input.question,
-          });
+          await dependencies.emit(routeProgress);
         } catch {
           afterTerminalRejected = true;
         }
@@ -647,7 +646,7 @@ describe("POST /api/research", () => {
     expect(nonCancellationRejected).toBe(true);
     expect(afterTerminalRejected).toBe(true);
     expect(events).toEqual([
-      { type: "plan.started", question },
+      routeProgress,
       { type: "research.cancelled" },
     ]);
   });

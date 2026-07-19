@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import {
-  decodeEventLine,
   researchEventSchema,
   type ResearchEvent,
 } from "@/lib/agent/research-events";
+import {
+  consumeResearchStream,
+  isRequestTerminal,
+  isResearchTerminal,
+  ResearchStreamProtocolError,
+} from "@/lib/agent/research-stream-protocol";
 import {
   researchInputSchema,
   researchPlanSchema,
@@ -225,16 +230,6 @@ function reducer(state: State, action: Action): State {
   };
 }
 
-class ProtocolError extends Error {}
-
-function isTerminal(event: ResearchEvent): boolean {
-  return terminalStatuses[event.type] !== undefined;
-}
-
-function isResearchTerminal(event: ResearchEvent): boolean {
-  return isTerminal(event) && event.type !== "plan.awaiting_approval";
-}
-
 export function useResearchStream(): {
   run: ResearchRun;
   planReview?: { input: ResearchInput; plan: ResearchPlan };
@@ -349,9 +344,7 @@ export function useResearchStream(): {
           : { type: "start", generation, input: parsed.data },
       );
 
-      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-      let protocolFailure = false;
-      let terminalSeen = false;
+      let streamStarted = false;
 
       try {
         const response = await fetch("/api/research", {
@@ -388,109 +381,47 @@ export function useResearchStream(): {
           return;
         }
 
-        reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8", { fatal: true });
-        let buffer = "";
-
-        const processRecord = (record: string) => {
-          if (terminalSeen) throw new ProtocolError();
-          let event: ResearchEvent;
-          try {
-            event = decodeEventLine(
-              record.endsWith("\r") ? record.slice(0, -1) : record,
-            );
-          } catch {
-            throw new ProtocolError();
-          }
-          if (!isCurrent(generation)) return;
-
-          if (event.type === "report.started") {
-            const activeAccumulator = reportAccumulatorRef.current;
-            if (activeAccumulator?.generation === generation) {
-              throw new ProtocolError();
-            }
-            clearReportFlushTimer();
-            reportAccumulatorRef.current = {
-              generation,
-              markdown: "",
-              nextSequence: 0,
-              hadReportDraft: false,
-            };
-          } else if (event.type === "report.delta") {
-            const accumulator = reportAccumulatorRef.current;
-            // 序号必须无缝递增；重复、倒序或跳号都说明草稿快照已不再可信。
-            if (
-              !accumulator ||
-              accumulator.generation !== generation ||
-              event.sequence !== accumulator.nextSequence
+        streamStarted = true;
+        await consumeResearchStream(response.body, {
+          request: approvedPlan ? "execute" : "plan",
+          cancellationSignal: controller.signal,
+          async onDurableEvent(event) {
+            if (!isCurrent(generation)) return;
+            if (event.type === "report.started") {
+              clearReportFlushTimer();
+              reportAccumulatorRef.current = {
+                generation,
+                markdown: "",
+                nextSequence: 0,
+                hadReportDraft: false,
+              };
+            } else if (
+              event.type === "report.validating" ||
+              event.type === "report.repairing" ||
+              isRequestTerminal(event)
             ) {
-              throw new ProtocolError();
+              // 渲染批处理仍属于 Hook；协议 module 只提供已验证的完整草稿快照。
+              flushReportDraft(generation);
             }
-            accumulator.markdown =
-              event.mode === "append"
-                ? accumulator.markdown + event.text
-                : event.text;
-            accumulator.nextSequence += 1;
+            dispatch({ type: "event", generation, event });
+            if (isRequestTerminal(event)) {
+              clearReportFlushTimer();
+              reportAccumulatorRef.current = null;
+            }
+          },
+          async onTransientDraft(draft) {
+            if (!isCurrent(generation)) return;
+            const accumulator = reportAccumulatorRef.current;
+            if (!accumulator || accumulator.generation !== generation) return;
+            accumulator.markdown = draft.markdown;
+            accumulator.nextSequence = draft.sequence + 1;
             accumulator.hadReportDraft = true;
             scheduleReportFlush(generation);
-            // delta 只属于瞬态草稿，不进入持久事件日志，避免高频正文污染 Printer。
-            return;
-          } else if (
-            event.type === "report.validating" ||
-            event.type === "report.repairing" ||
-            isTerminal(event)
-          ) {
-            // 状态切换和终止事件必须先强制刷新，确保 UI 不会落后于最后一段正文。
-            flushReportDraft(generation);
-          }
-          dispatch({ type: "event", generation, event });
-          terminalSeen = isTerminal(event);
-          if (terminalSeen) {
-            clearReportFlushTimer();
-            reportAccumulatorRef.current = null;
-          }
-        };
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            try {
-              buffer += decoder.decode();
-            } catch {
-              throw new ProtocolError();
-            }
-            break;
-          }
-
-          // Network chunks are arbitrary byte groups, never message boundaries.
-          try {
-            buffer += decoder.decode(value, { stream: true });
-          } catch {
-            throw new ProtocolError();
-          }
-          let newline = buffer.indexOf("\n");
-          while (newline !== -1) {
-            const record = buffer.slice(0, newline);
-            buffer = buffer.slice(newline + 1);
-            processRecord(record);
-            newline = buffer.indexOf("\n");
-          }
-        }
-
-        if (buffer.length > 0) throw new ProtocolError();
-        if (!terminalSeen && isCurrent(generation)) {
-          flushReportDraft(generation);
-          dispatch({
-            type: "fail",
-            generation,
-            error: "Research stream failed.",
-            recoverable: true,
-          });
-        }
+          },
+        });
       } catch (error) {
         if (!isCurrent(generation)) return;
-        if (error instanceof ProtocolError || error instanceof SyntaxError) {
-          protocolFailure = true;
+        if (error instanceof ResearchStreamProtocolError) {
           flushReportDraft(generation);
           dispatch({
             type: "fail",
@@ -498,9 +429,6 @@ export function useResearchStream(): {
             error: "Research stream protocol error.",
             recoverable: true,
           });
-        } else if (terminalSeen) {
-          // 合法终态后的传输尾部错误不影响已验证结果，也不合成本地失败事件。
-          return;
         } else if (controller.signal.aborted) {
           flushReportDraft(generation);
           dispatch({ type: "cancel", generation });
@@ -509,27 +437,13 @@ export function useResearchStream(): {
           dispatch({
             type: "fail",
             generation,
-            error: reader
+            error: streamStarted
               ? "Research stream failed."
               : "Unable to complete research.",
             recoverable: true,
           });
         }
       } finally {
-        if (protocolFailure && reader) {
-          try {
-            await reader.cancel();
-          } catch {
-            // The public protocol error is already recorded.
-          }
-        }
-        if (reader) {
-          try {
-            reader.releaseLock();
-          } catch {
-            // Lock cleanup must never replace the run's terminal outcome.
-          }
-        }
         if (isCurrent(generation)) controllerRef.current = null;
       }
     },

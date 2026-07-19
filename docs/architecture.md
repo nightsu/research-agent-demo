@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | UI 工作台 | `components/research/research-workbench.tsx` | 发起 / 取消 / 重试研究，并按运行终态组合进度、打印流、报告与来源抽屉 |
 | 计划审核 | `components/research/research-plan-review.tsx` | 锁定原始 brief，校验用户对计划目标、子问题和搜索词的修订，并提交 Approved Plan |
-| 流客户端 | `components/research/use-research-stream.ts` | POST 请求、任意字节分块解码、事件校验、终态和取消 |
+| 流客户端 | `components/research/use-research-stream.ts` | POST、generation 隔离、用户动作和 40 ms React 草稿批处理 |
 | UI 投影 | `components/research/research-view-model.ts` | 从事件日志去重来源、关联评估、编号引用并派生展示状态 |
 | 打印投影 | `components/research/research-printer-model.ts` | 把追加事件日志聚合为计划、搜索批次、缺口、结论与综合记录 |
 | 打印视图 | `components/research/research-printer.tsx` | 渲染结构化记录，并管理自动跟随、暂停阅读和来源入口 |
@@ -18,6 +18,7 @@
 | 工作流编排 | `lib/agent/research-agent.ts` | 显式 research loop、预算、超时、重试、状态迁移和公开失败 |
 | 状态账本 | `lib/agent/research-state.ts` | 合法状态转换、来源 / 评估合并及终态数据 |
 | 事件协议 | `lib/agent/research-events.ts` | 类型化可观察事件与一行一个 NDJSON 编解码 |
+| 流协议解释器 | `lib/agent/research-stream-protocol.ts` | 任意字节分块、事件校验、Request / Research Terminal、delta 序号、事务式 writer 与 clean EOF |
 | 模型边界 | `lib/providers/research-model.ts` | 结构化生成、一次格式修复、来源评估及引用完整性 |
 | 提供商选择 | `lib/providers/index.ts` | Kimi / DeepSeek 环境切换与凭据读取 |
 | 网络工具 | `lib/tools/tavily.ts` | Tavily Search / Extract 请求、URL 和响应校验、来源 ID |
@@ -30,8 +31,10 @@ flowchart TB
     subgraph Browser[浏览器]
       UI[ResearchWorkbench]
       Hook[useResearchStream]
+      Protocol[Research Stream Protocol]
       VM[deriveResearchViewModel]
       UI --> Hook
+      Hook --> Protocol
       Hook --> VM --> UI
     end
 
@@ -42,6 +45,7 @@ flowchart TB
       Agent[runResearch]
       State[reduceResearchState]
       Events[researchEventSchema]
+      ProtocolServer[Research Stream Protocol]
       Model[ResearchModel]
       Provider[Kimi or DeepSeek]
       Tavily[Tavily adapter]
@@ -51,13 +55,13 @@ flowchart TB
       Wrapper -- exports as POST --> Handler
       Handler --> Agent
       Agent <--> State
-      Agent --> Events --> Handler
+      Agent --> Events --> ProtocolServer --> Handler
       Agent --> Model --> Provider
       Agent --> Tavily
     end
 
     Hook -- POST /api/research --> Handler
-    Handler -- typed NDJSON --> Hook
+    Handler -- typed NDJSON --> Protocol --> Hook
     Provider -- structured generation --> Model
     Tavily -- HTTPS --> Web[("Tavily Search / Extract")]
 ```
@@ -143,7 +147,7 @@ sequenceDiagram
     R-->>H: typed NDJSON terminal event
 ```
 
-图中从 `createResearchRoute()` handler 发出的每个箭头实际上都是 Zod 校验后的一行 NDJSON。计划流以 `plan.awaiting_approval` 结束，执行流以报告、部分报告、取消或失败结束；客户端在两条流之间保留原始输入和经过审核的计划。`app/api/research/route.ts` 不实现协议，只把生产依赖传给 factory 并暴露 Next.js 允许的 route exports。客户端不能假设网络 chunk 等于一条事件，因此 `useResearchStream` 先用 `TextDecoder` 累积字节，再按换行切分和调用 `decodeEventLine`。
+图中从 `createResearchRoute()` handler 发出的每个箭头实际上都是 Zod 校验后的一行 NDJSON。计划流以 `plan.awaiting_approval` 这个 Request Terminal 结束，但研究仍可在审批后继续；执行流的完成、部分完成、取消或失败同时是 Request Terminal 与 Research Terminal。`app/api/research/route.ts` 不实现协议，只把生产依赖传给 factory 并暴露 Next.js 允许的 route exports。`research-stream-protocol.ts` 是 server writer 与 client reader 共享的协议事实来源：它处理任意 UTF-8 chunk、完整记录、终态和 delta，而 Hook 只消费经过验证的 Durable events 与 Transient draft。
 
 ## 真实报告流
 
@@ -160,8 +164,10 @@ flowchart TB
     Repair["hidden once-only repair<br/>no second visible draft"]
     Projector["reportDraftToMarkdown<br/>append or replace"]
     Agent["Research Agent<br/>delivery ack then sequence++"]
-    Route["NDJSON route<br/>schema + desiredSize backpressure"]
-    Hook["useResearchStream<br/>ref accumulator + 40 ms flush"]
+    ProtocolWriter["Research Stream Protocol writer<br/>terminal + transaction"]
+    ProtocolReader["Research Stream Protocol reader<br/>NDJSON + sequence + EOF"]
+    Route["NDJSON route adapter<br/>desiredSize backpressure"]
+    Hook["useResearchStream adapter<br/>generation + 40 ms flush"]
     Events["run.events<br/>durable low-frequency facts"]
     Draft["run.reportDraft<br/>transient Markdown snapshot"]
     Streamdown["standalone Streamdown<br/>inert links, no images or raw HTML"]
@@ -170,7 +176,7 @@ flowchart TB
 
     Strategy -->|"true"| Native --> Model
     Strategy -->|"false"| Prompted --> Model
-    Model --> Partial --> Callbacks --> Projector --> Agent --> Route --> Hook
+    Model --> Partial --> Callbacks --> Projector --> Agent --> ProtocolWriter --> Route --> ProtocolReader --> Hook
     Model -->|"partial stream ends"| Callbacks
     Callbacks -->|"final output validates"| Agent
     Callbacks -->|"repairable structured-output error"| Repair --> Agent
@@ -189,11 +195,11 @@ partial structured output 通常只增长，但这不是协议保证。若新 Ma
 
 partial stream 结束后先发 `report.validating`。只有最终结构化输出属于可修复错误时才发 `report.repairing`，并最多进行一次隐藏的非流式修复；第二次尝试不回放 delta，避免清空或反驳用户正在阅读的第一版草稿。鉴权、限流、网络、取消和 callback 错误不伪装成格式修复。修复也失败、网络中断或用户取消时，已有草稿保留为 `incomplete`。
 
-`createResearchRoute()` 继续承担每个请求的唯一终态与 `ReadableStream.desiredSize` 背压：每个回调必须等上一条 NDJSON 获得容量才能继续。计划请求以 `plan.awaiting_approval` 终止；执行请求只能以 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一终止。`report.delta` 不是终态。
+`createResearchRoute()` 继续承担 `ReadableStream.desiredSize` 背压和请求 / consumer 取消；唯一 Request Terminal 由事务式 protocol writer 保证。`writer.deliver()` 先验证请求阶段、事件内容和编码，等待 route adapter 成功 enqueue 后才提交协议状态；并发 telemetry / report callback 会按调用顺序串行。workflow 意外结束时，`writer.finish()` 通过相同 delivery 路径补调用方提供的安全失败事件，多个并发 finish 调用共享同一事务。计划请求只允许计划阶段事件以及取消 / 失败，并以 `plan.awaiting_approval` 终止；执行请求拒绝所有计划阶段事件，只能以 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一终止。`report.delta` 不是终态。
 
 ### 客户端：持久事实与瞬态草稿分离
 
-`run.events` 保存可回放的低频研究事实，包括 `report.started`、`report.validating`、`report.repairing` 和唯一终态。高频 `report.delta` 虽然先经过严格 schema 与 sequence 校验，却只进入 ref 中的 accumulator，不追加到 `run.events`。Hook 立即在 ref 上应用 append / replace，每 40 ms 最多向 React flush 一次；终态、取消和失败先同步 flush，避免最后一批合法文本丢失。新运行、重试和 generation 切换同时清理 ref 与 timer，使旧请求不能污染新草稿。
+`run.events` 保存可回放的低频研究事实，包括 `report.started`、`report.validating`、`report.repairing` 和唯一终态。高频 `report.delta` 由 protocol reader 校验 sequence 并投影成完整 Transient draft，不追加到 Durable events。Hook 只把最新快照写入 ref，每 40 ms 最多向 React flush 一次；终态、取消和失败先同步 flush，避免最后一批合法文本丢失。新运行、重试和 generation 切换同时清理 ref 与 timer，使旧请求不能污染新草稿。
 
 草稿由独立 `streamdown` 包渲染，不安装 assistant-ui，也不引入 Thread、Message 或额外 Runtime。草稿禁用 raw HTML 插件，把链接渲染成不可点击文本并丢弃图片；它没有 `aria-live`，避免每 40 ms 重读整篇文档。`prefers-reduced-motion` 只关闭 caret 和 entry transition，文本本身仍随真实 delta 增长。正式报告继续由 `ResearchReportView` 渲染，并只让已收集来源的安全引用打开 `SourceDrawer`。
 
@@ -207,15 +213,16 @@ partial stream 结束后先发 `report.validating`。只有最终结构化输出
 
 建议按数据实际经过的顺序学习：
 
-1. `lib/agent/research-events.ts`：公开协议、sequence 和错误边界；
-2. `lib/providers/research-model.ts`：`partialOutputStream`、callback、cleanup 与一次隐藏修复；
-3. `lib/agent/report-draft.ts`：partial object 如何变成确定性 Markdown 和 append / replace；
-4. `lib/agent/research-agent.ts`：callback 如何映射为有序事件；
-5. `lib/server/research-route.ts`：NDJSON 背压、取消和唯一终态；
-6. `components/research/use-research-stream.ts`：ref accumulator、40 ms batching 与 protocol failure；
-7. `components/research/streaming-report-draft.tsx`：独立 Streamdown 的渲染安全；
-8. `components/research/research-workbench.tsx`：报告 surface、跟随暂停和响应式 owner 迁移；
-9. `components/research/research-report.tsx` 与 `source-drawer.tsx`：正式替换与引用交互。
+1. `lib/agent/research-events.ts`：公开哪些事件与 wire record；
+2. `lib/agent/research-stream-protocol.ts`：Request / Research Terminal、任意字节流、delta 与事务 writer；
+3. `lib/providers/research-model.ts`：`partialOutputStream`、callback、cleanup 与一次隐藏修复；
+4. `lib/agent/report-draft.ts`：partial object 如何变成确定性 Markdown 和 append / replace；
+5. `lib/agent/research-agent.ts`：callback 如何映射为有序事件；
+6. `lib/server/research-route.ts`：writer delivery adapter、NDJSON 背压与取消；
+7. `components/research/use-research-stream.ts`：reader callback adapter、generation 与 40 ms batching；
+8. `components/research/streaming-report-draft.tsx`：独立 Streamdown 的渲染安全；
+9. `components/research/research-workbench.tsx`：报告 surface、跟随暂停和响应式 owner 迁移；
+10. `components/research/research-report.tsx` 与 `source-drawer.tsx`：正式替换与引用交互。
 
 ## 一次搜索迭代如何映射到代码
 
@@ -301,7 +308,7 @@ plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonC
 
 当前 Demo 没有网关鉴权、用户级 rate limit、并发限制或付费 quota。对公网暴露模型与 Tavily 付费 API 前，必须先在可信网关补齐这些生产控制。本地 2026-07-16 Kimi + Tavily quick 路径已经实测真实草稿增长、最终 `report.completed`、原位正式替换和引用抽屉；DeepSeek、部署 runtime 保证与其他环境仍未验证。
 
-每个请求只能有一个终态：计划请求是 `plan.awaiting_approval`，执行请求是 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一。`createResearchRoute()` handler 记录首次终态并拒绝后续 emit；若依赖意外结束却没发终态，`ensureTerminal()` 尝试补一个安全的 `research.failed`。客户端同样拒绝终态后的记录和没有终态就结束的流。薄包装 `app/api/research/route.ts` 不复制这些规则。
+每个请求只能有一个 Request Terminal：计划请求通常是 `plan.awaiting_approval`，执行请求是 `report.completed`、`research.partial`、`research.cancelled` 或 `research.failed` 之一。Research Stream Protocol 同时区分整个研究是否结束：`plan.awaiting_approval` 不是 Research Terminal。计划审批对任何尾部违规 fail closed；已经收到 Research Terminal 后的尾部传输错误只作为返回结果中的 retained violation，不改写首个权威结果。本演示没有持久化遥测 sink，因此 Hook 有意不展示或保存这类协议健康信息；接入监控时应在 adapter 边界读取该结果。writer 在缺少终态时补安全 fallback，reader 在 clean EOF 前要求合法 Request Terminal；Route 和 Hook 不再分别维护事件集合。
 
 ## 高价值注释说明
 
@@ -312,7 +319,8 @@ plan、evaluation、evidence 和隐藏 repair 都走 `generateText + appendJsonC
 - `research-events.ts` 说明事件只公开可观察决定，不承载私有思维链。
 - `research-model.ts` 说明 schema 的双重边界以及只有结构化输出错误才能修复，避免未来把认证 / 网络失败误重试成模型调用。
 - `tavily.ts` 说明模型与 HTTP 的权限边界。
-- `use-research-stream.ts` 提醒网络字节 chunk 不是消息边界，并解释清理错误不能覆盖已经确定的公开结果。
+- `research-stream-protocol.ts` 解释为何 Plan Review 对尾部违规 fail closed、Research Terminal 保留首个权威结果，以及为何 writer 只在 delivery 成功后提交状态。
+- `use-research-stream.ts` 说明 40 ms 批处理属于 React 渲染策略，而不是 wire protocol。
 
 这些注释记录“为什么”和安全不变量；函数名、参数或逐行行为能直接读懂的部分不重复注释。
 

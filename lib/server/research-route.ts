@@ -1,5 +1,6 @@
 import { proposeResearchPlan, runResearch } from "../agent/research-agent";
-import { encodeEvent, type ResearchEvent } from "../agent/research-events";
+import type { ResearchEvent } from "../agent/research-events";
+import { createResearchStreamWriterGate } from "../agent/research-stream-protocol";
 import {
   researchOperationRequestSchema,
   type ResearchOperationRequest,
@@ -13,19 +14,11 @@ const STREAM_HEADERS = {
   "x-accel-buffering": "no",
 };
 
-const FALLBACK_FAILURE: ResearchEvent = {
+const FALLBACK_FAILURE: Extract<ResearchEvent, { type: "research.failed" }> = {
   type: "research.failed",
   message: "The research request failed.",
   recoverable: false,
 };
-
-const terminalEventTypes = new Set<ResearchEvent["type"]>([
-  "plan.awaiting_approval",
-  "report.completed",
-  "research.partial",
-  "research.cancelled",
-  "research.failed",
-]);
 
 export interface ResearchRouteDependencies {
   createModel: () => ResearchModel;
@@ -60,12 +53,10 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
       return safeJsonError("研究服务暂时不可用，请稍后重试。", 500);
     }
 
-    const encoder = new TextEncoder();
     const workflowController = new AbortController();
     let writable = true;
     let closed = false;
     let cleanedUp = false;
-    let terminalEvent: ResearchEvent["type"] | null = null;
     let capacityWaiter: {
       resolve: () => void;
       reject: (reason: unknown) => void;
@@ -98,11 +89,8 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        const assertCanEmit = (event: ResearchEvent) => {
+        const assertCanDeliver = (event: ResearchEvent) => {
           if (!writable) throw closedReason();
-          if (terminalEvent !== null) {
-            throw new Error(`Research terminal event already emitted: ${terminalEvent}`);
-          }
           if (
             workflowController.signal.aborted &&
             event.type !== "research.cancelled"
@@ -110,6 +98,8 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
             throw closedReason();
           }
         };
+
+        const writer = createResearchStreamWriterGate(operation.action);
 
         const waitForCapacity = async (): Promise<void> => {
           if (!writable || closed || workflowController.signal.aborted) {
@@ -125,30 +115,37 @@ export function createResearchRoute(dependencies: ResearchRouteDependencies) {
           });
         };
 
-        const emit = async (event: ResearchEvent): Promise<void> => {
-          assertCanEmit(event);
-          const encoded = encoder.encode(encodeEvent(event));
+        const deliver = async (
+          event: ResearchEvent,
+          encoded: Uint8Array,
+        ): Promise<void> => {
+          assertCanDeliver(event);
           const abortedCancellation =
             event.type === "research.cancelled" &&
             workflowController.signal.aborted;
           // Cancellation is the sole post-abort record. It must not deadlock
           // behind capacity that a disconnected requester may never pull.
           if (!abortedCancellation) await waitForCapacity();
-          assertCanEmit(event);
+          assertCanDeliver(event);
           controller.enqueue(encoded);
-          if (terminalEventTypes.has(event.type)) terminalEvent = event.type;
         };
+
+        const emit = (event: ResearchEvent): Promise<void> =>
+          writer.deliver(event, (encoded) => deliver(event, encoded));
 
         const ensureTerminal = async (): Promise<void> => {
           if (
             !writable ||
             workflowController.signal.aborted ||
-            terminalEvent !== null
+            closed
           ) {
             return;
           }
           try {
-            await emit(FALLBACK_FAILURE);
+            await writer.finish({
+              fallbackEvent: FALLBACK_FAILURE,
+              deliver: (encoded) => deliver(FALLBACK_FAILURE, encoded),
+            });
           } catch {
             // Cancellation or a concurrent close can make the stream unwritable.
           }
